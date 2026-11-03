@@ -475,6 +475,8 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
         save();
       }
       if (!text) return;
+      // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
+      for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
       if (c.status !== "running") return startTurn(c, text);
       try {
         const up = await upstream(c);

@@ -49,12 +49,13 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     if (stick.current && log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [items]);
 
-  const submit = (steer: boolean) => {
+  /** Default steers: into the running turn right away (idle: starts one). `queue`: waits for the turn to end. */
+  const submit = (queue: boolean) => {
     const text = draft.trim();
     if (!text) return;
     setDraft("");
     stick.current = true;
-    send(steer ? { type: "steer", id, text } : { type: "send", id, text });
+    send(queue ? { type: "send", id, text } : { type: "steer", id, text });
   };
 
   return (
@@ -194,11 +195,11 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                 submit(e.altKey);
               }
             }}
-            placeholder={readOnly ? `${conv?.channel}: read-only here` : running ? "Queue a message (Alt+Enter: steer now)" : "Message rocky"}
+            placeholder={readOnly ? `${conv?.channel}: read-only here` : running ? "Steer rocky (Alt+Enter: queue for after this turn)" : "Message rocky"}
             className="field-sizing-content max-h-60 min-h-10 flex-1 resize-none rounded-md border border-line-strong bg-input px-3 py-2 outline-none placeholder:text-faint focus:border-accent disabled:opacity-50"
           />
           <button className="rounded-md bg-accent px-4 font-medium text-base hover:bg-accent-light disabled:opacity-40" disabled={!draft.trim() || readOnly}>
-            {running ? "Queue" : "Send"}
+            {running ? "Steer" : "Send"}
           </button>
         </div>
       </form>
