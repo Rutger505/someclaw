@@ -1,3 +1,4 @@
+import { Check, ChevronRight, Wrench, X } from "lucide-react";
 import { useState } from "react";
 import type { Tool } from "../lib/items";
 
@@ -23,20 +24,21 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
   const hidden = Math.max(0, tools.length - VISIBLE);
 
   return (
-    <div className="overflow-hidden rounded-md border border-line bg-surface font-mono text-xs">
+    <div className="overflow-hidden rounded-xl border border-line bg-surface/60">
       <button
         onClick={() => setOpen((x) => !x)}
-        className="flex h-6 w-full items-center gap-1.5 border-b border-line px-2 text-left text-muted hover:text-fg-2"
+        className="flex h-8 w-full items-center gap-2 px-3 text-left text-xs text-muted transition-colors hover:text-fg-2"
       >
-        <span className={`transition-transform duration-150 ${open ? "rotate-90" : ""}`}>▸</span>
-        <span>
+        <Wrench size={13} />
+        <span className="font-medium">
           {tools.length} tool call{tools.length === 1 ? "" : "s"}
         </span>
-        {running > 0 && live && <span className="text-warn">· {running} running</span>}
+        {running > 0 && live && <span className="text-warn">· running</span>}
+        <ChevronRight size={14} className={`ml-auto transition-transform duration-150 ${open ? "rotate-90" : ""}`} />
       </button>
 
       {open ? (
-        <div className="max-h-[32rem] overflow-y-auto">
+        <div className="max-h-[32rem] overflow-y-auto border-t border-line font-mono text-xs">
           {tools.map((t, i) => (
             <ToolDetails key={t.id || i} t={t} live={live} />
           ))}
@@ -45,7 +47,7 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
         <div
           onClick={() => setOpen(true)}
           style={{ height: Math.min(tools.length, VISIBLE) * ROW }}
-          className={`cursor-pointer overflow-hidden transition-[height] duration-200 ease-out motion-reduce:transition-none ${
+          className={`cursor-pointer overflow-hidden border-t border-line font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
             hidden ? "mask-t-from-60%" : ""
           }`}
         >
@@ -64,14 +66,14 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
 }
 
 function Status({ t, live }: { t: Tool; live: boolean }) {
-  if (t.output !== undefined) return <span className="w-3 shrink-0 text-center text-ok">✓</span>;
-  if (!live) return <span className="w-3 shrink-0 text-center text-err">✕</span>;
-  return <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-warn border-t-transparent" />;
+  if (t.output !== undefined) return <Check size={12} strokeWidth={3} className="shrink-0 text-ok" />;
+  if (!live) return <X size={12} strokeWidth={3} className="shrink-0 text-err" />;
+  return <span className="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-warn border-t-transparent" />;
 }
 
 function ToolLine({ t, live }: { t: Tool; live: boolean }) {
   return (
-    <div className="flex h-6 items-center gap-1.5 px-2 text-fg-2 transition-opacity duration-300 starting:opacity-0">
+    <div className="flex h-6 items-center gap-2 px-3 text-fg-2 transition-opacity duration-300 starting:opacity-0">
       <Status t={t} live={live} />
       <span className="shrink-0 text-accent-light">{t.name}</span>
       <span className="truncate text-faint">{brief(t.args)}</span>
@@ -82,12 +84,12 @@ function ToolLine({ t, live }: { t: Tool; live: boolean }) {
 function ToolDetails({ t, live }: { t: Tool; live: boolean }) {
   return (
     <details className="group border-t border-line first:border-t-0">
-      <summary className="flex h-6 cursor-pointer list-none items-center gap-1.5 px-2 text-fg-2 hover:bg-elevated hover:text-fg">
+      <summary className="flex h-6 cursor-pointer list-none items-center gap-2 px-3 text-fg-2 hover:bg-elevated hover:text-fg">
         <Status t={t} live={live} />
         <span className="shrink-0 text-accent-light">{t.name}</span>
         <span className="truncate text-faint">{brief(t.args)}</span>
       </summary>
-      <pre className="max-h-80 overflow-auto whitespace-pre-wrap border-t border-line bg-code px-2 py-1 text-fg-2">
+      <pre className="max-h-80 overflow-auto whitespace-pre-wrap border-t border-line bg-code px-3 py-2 text-fg-2">
         {JSON.stringify(t.args, null, 2)}
         {t.output !== undefined && `\n\n← ${t.output}`}
       </pre>

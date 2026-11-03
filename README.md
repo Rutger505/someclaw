@@ -2,14 +2,13 @@
 
 Custom web UI for [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), next to the official dashboard instead of replacing it. Always talks to agent `rocky`.
 
-One chat pane, a sidebar with all of rocky's conversations (gateway sessions). Status dots, message queue, archive, auto-titles, keyboard shortcuts (Ctrl+/ lists them).
+One chat pane, a sidebar with all of rocky's conversations (gateway sessions). Status dots, steering, archive, auto-titles, keyboard shortcuts (Ctrl+/ lists them).
 
-- `server/broker.ts`: owns one gateway `/ws/chat` socket per active conversation, so turns, queues and status survive tab switches, reloads and closed browsers. Browsers talk to it over `/someclaw/ws` (protocol in `shared/protocol.ts`): conversation list, snapshots (history + tool logs + running turn), live events.
+- `server/broker.ts`: owns one gateway `/ws/chat` socket per active conversation, so turns and status survive tab switches, reloads and closed browsers. Browsers talk to it over `/someclaw/ws` (protocol in `shared/protocol.ts`): conversation list, snapshots (history + tool logs + running turn), live events.
   - List = `GET /api/sessions` for agent rocky (polled every 5 s while a browser is open) + `/api/sessions/running`. Empty sessions are hidden. Channel sessions (WhatsApp) are read-only: `/ws/chat` can't write into them.
-  - Sending while a turn runs steers by default: into the running turn, the gateway folds it in (a turn that is just finishing gets a new turn instead). Alt+Enter queues instead; the next queued turn starts on `done` ("steer" on a queued item sends it in now).
-  - Paused queue: a stop pauses until "resume"; an error retries after 10/30/90 s, then stays paused; a someclaw restart resumes after 5 s. A queued message whose turn failed before reaching the gateway goes back to the front.
+  - No queue: a message sent while rocky works goes straight into the running turn (steer, the gateway folds it in). A turn that is just finishing gets a new turn instead.
   - Auto-titles (`server/title.ts`): after the first reply, one turn of agent `titler` (cheap, tool-less, defined in zeroclaw-config) in a throwaway session, then `PUT /api/sessions/{id}` with the name. Until then the sidebar shows the first message.
-  - Own state (archive, seen, queues, previews, tool logs: gateway history has no tool calls) as JSON in `~/.local/state/someclaw` (`SOMECLAW_STATE_DIR`). Also keeps the last valid browser token, so queues run with no browser open.
+  - Own state (archive, seen, previews, tool logs: gateway history has no tool calls) as JSON in `~/.local/state/someclaw` (`SOMECLAW_STATE_DIR`). Also keeps the last valid browser token, so turns finish with no browser open.
 - `src/`: React + TypeScript + Tailwind (theme = the ZeroClaw dashboard palette, `src/styles.css`). Pairs via `POST /api/pair`. Keymap in `src/lib/shortcuts.ts`.
 - `build.ts`: bundles `src/index.html` with `Bun.build` + `bun-plugin-tailwind` into `dist/` (swapped in atomically). `--watch` for dev.
 - `server.ts`: Bun server: serves `dist/`, runs the broker, proxies `/api/*` + `/health` to the gateway (pairing; the gateway has no CORS). `PORT` (default 42618), `ZEROCLAW_GATEWAY` (default `http://127.0.0.1:42617`).
@@ -47,7 +46,7 @@ Open the URL, enter a pairing code (`zeroclaw gateway get-paircode --new`). Its 
 
 ## Shortcuts
 
-Ctrl+1-9 open conversation 1-9 (sidebar order: newest created first, stable), Ctrl+O new, Alt+↑/↓ previous/next, Alt+A archive, Alt+R rename, Esc stop, Ctrl+B sidebar, Ctrl+L focus input, Ctrl+/ help. In the input: Enter send (steers while busy), Alt+Enter queue. Browser tabs keep Ctrl+1-9: use an app window (Chromium `--app`, Omarchy web app).
+Ctrl+1-9 open conversation 1-9 (sidebar order: newest created first, stable), Ctrl+O new, Alt+↑/↓ previous/next, Alt+A archive, Alt+R rename, Esc stop, Ctrl+B sidebar, Ctrl+L focus input, Ctrl+/ help. In the input: Enter send (steers while rocky works). Hold Ctrl to see the sidebar numbers. Browser tabs keep Ctrl+1-9: use an app window (Chromium `--app`, Omarchy web app).
 
 ## Not done
 

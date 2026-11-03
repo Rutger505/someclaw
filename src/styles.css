@@ -1,5 +1,19 @@
 @import "tailwindcss";
 
+/* Latin subsets only (the packages' own CSS inlines every script: ~450 KB) */
+@font-face {
+  font-family: "Inter Variable";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+}
+
 /* ZeroClaw dashboard palette (its --pc-* vars), as Tailwind colors: bg-base, text-accent, border-line, ... */
 @theme {
   --color-base: #1e1e24;
@@ -21,10 +35,18 @@
   --color-warn: #ffaa00;
   --color-err: #ff4466;
   --color-info: #0080ff;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  /* one radius scale: controls md, cards xl, composer/bubbles 2xl */
+  --radius-md: 0.5rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.25rem;
 }
 
 @layer base {
   html, body, #root { @apply h-full; }
-  body { @apply bg-base text-[15px] text-fg antialiased; }
+  body { @apply bg-base font-sans text-[15px] leading-relaxed text-fg antialiased; font-feature-settings: "cv11", "ss01"; }
   ::selection { @apply bg-accent-dim; }
+  * { scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
 }

@@ -1,23 +1,22 @@
-import { useState } from "react";
+import { Archive, ArchiveRestore, ChevronRight, ExternalLink, Keyboard, MessageCircle, Plus } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { Conversation } from "../../shared/protocol";
 import { DASHBOARD_URL } from "../App";
 import type { Link } from "../lib/broker";
 
 export const convTitle = (c: Conversation) => c.name ?? c.preview ?? (c.channel ? c.channel : "New conversation");
 
-/** running = pulsing amber, error = red, paused queue = amber ring, unread = cyan, idle = grey. */
-export function StatusDot({ c, className = "" }: { c: Pick<Conversation, "status" | "unread" | "paused" | "queue">; className?: string }) {
+/** running = pulsing amber, error = red, unread = cyan, idle = nothing. */
+export function StatusDot({ c, className = "" }: { c: Pick<Conversation, "status" | "unread">; className?: string }) {
   const [color, title] =
     c.status === "running"
       ? ["bg-warn animate-pulse", "running"]
       : c.status === "error"
         ? ["bg-err", "error"]
-        : c.paused && c.queue.length
-          ? ["bg-transparent ring-2 ring-inset ring-warn", "queue paused"]
-          : c.unread
-            ? ["bg-accent shadow-[0_0_6px] shadow-accent", "unread"]
-            : ["bg-faint", "idle"];
-  return <span title={title} className={`inline-block size-2 shrink-0 rounded-full ${color} ${className}`} />;
+        : c.unread
+          ? ["bg-accent shadow-[0_0_8px] shadow-accent/60", "unread"]
+          : ["bg-transparent", "idle"];
+  return <span title={title} className={`inline-block size-1.5 shrink-0 rounded-full ${color} ${className}`} />;
 }
 
 type Props = {
@@ -33,54 +32,77 @@ type Props = {
 
 export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchive, onHelp }: Props) {
   const [showArchived, setShowArchived] = useState(false);
+  const showKeys = useCtrlHeld();
   const active = list?.filter((c) => !c.archived) ?? [];
   const archived = list?.filter((c) => c.archived) ?? [];
 
   return (
-    <nav className="flex h-full w-72 shrink-0 flex-col border-r border-line bg-surface">
-      <div className="flex items-center gap-2 px-3 py-3">
-        <span className="font-semibold text-accent">someclaw</span>
-        <span className="text-sm text-muted">rocky</span>
+    <nav className="flex h-full w-68 shrink-0 flex-col border-r border-line bg-surface">
+      <div className="flex h-14 items-center gap-2.5 px-4">
+        <span className="grid size-7 place-items-center rounded-md bg-accent-glow ring-1 ring-accent-dim">
+          <span className="size-2.5 rounded-full bg-accent shadow-[0_0_10px] shadow-accent" />
+        </span>
+        <span className="font-semibold tracking-tight">someclaw</span>
+        <span className="rounded-md bg-elevated px-1.5 py-0.5 text-xs text-fg-2">rocky</span>
         <span
           title={`broker ${link}`}
-          className={`ml-auto size-1.5 rounded-full ${link === "open" ? "bg-ok" : link === "connecting" ? "bg-warn" : "bg-err"}`}
+          className={`ml-auto size-1.5 rounded-full ${link === "open" ? "bg-ok" : link === "connecting" ? "animate-pulse bg-warn" : "bg-err"}`}
         />
       </div>
 
-      <button
-        onClick={onNew}
-        className="mx-3 mb-2 flex items-center justify-between rounded-md border border-accent-dim bg-accent-glow px-3 py-1.5 text-sm text-accent-light hover:border-accent"
-      >
-        <span>+ New conversation</span>
-        <kbd className="font-mono text-xs text-muted">Ctrl+O</kbd>
-      </button>
+      <div className="px-3 pb-3">
+        <button
+          onClick={onNew}
+          className="group flex h-9 w-full items-center gap-2 rounded-md border border-line-strong px-3 text-sm text-fg-2 transition-colors hover:border-accent-dim hover:bg-accent-glow hover:text-accent-light"
+        >
+          <Plus size={16} />
+          <span>New conversation</span>
+          <Kbd className="ml-auto opacity-0 transition-opacity group-hover:opacity-100">Ctrl O</Kbd>
+        </button>
+      </div>
 
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {listError && <p className="mx-1 my-2 break-words font-mono text-xs text-err">{listError}</p>}
-        {list === null && !listError && <p className="px-2 py-1 text-sm text-muted">loading…</p>}
-        {active.map((c, i) => (
-          <Row key={c.id} c={c} n={i < 9 ? i + 1 : null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />
-        ))}
+      <div className="flex-1 overflow-y-auto px-3 pb-3">
+        {listError && <p className="mb-2 rounded-md bg-err/10 px-2.5 py-2 font-mono text-xs break-words text-err">{listError}</p>}
+        {list === null && !listError && <p className="px-2.5 py-1.5 text-sm text-muted">Loading…</p>}
+        <div className="flex flex-col gap-0.5">
+          {active.map((c, i) => (
+            <Row key={c.id} c={c} n={showKeys && i < 9 ? i + 1 : null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />
+          ))}
+        </div>
         {archived.length > 0 && (
           <>
             <button
               onClick={() => setShowArchived((x) => !x)}
-              className="mt-3 w-full px-2 py-1 text-left text-xs uppercase tracking-wider text-muted hover:text-fg-2"
+              className="mt-4 mb-1 flex w-full items-center gap-1 px-2.5 text-xs font-medium text-muted transition-colors hover:text-fg-2"
             >
-              {showArchived ? "▾" : "▸"} Archived ({archived.length})
+              <ChevronRight size={14} className={`transition-transform duration-150 ${showArchived ? "rotate-90" : ""}`} />
+              Archived
+              <span className="ml-auto text-faint">{archived.length}</span>
             </button>
-            {showArchived && archived.map((c) => <Row key={c.id} c={c} n={null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />)}
+            {showArchived && (
+              <div className="flex flex-col gap-0.5">
+                {archived.map((c) => (
+                  <Row key={c.id} c={c} n={null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-line px-3 py-2 text-sm">
-        <a href={DASHBOARD_URL} target="_blank" rel="noreferrer" className="flex-1 rounded-md px-2 py-1 text-fg-2 hover:bg-elevated hover:text-accent-light">
-          ZeroClaw dashboard ↗
+      <div className="flex items-center gap-1 border-t border-line p-3">
+        <a
+          href={DASHBOARD_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="flex h-8 flex-1 items-center gap-2 rounded-md px-2.5 text-sm text-fg-2 transition-colors hover:bg-elevated hover:text-fg"
+        >
+          <ExternalLink size={15} />
+          ZeroClaw dashboard
         </a>
-        <button onClick={onHelp} title="Shortcuts (Ctrl+/)" className="rounded-md px-2 py-1 font-mono text-muted hover:bg-elevated hover:text-fg">
-          ?
-        </button>
+        <IconButton onClick={onHelp} title="Shortcuts (Ctrl+/)">
+          <Keyboard size={16} />
+        </IconButton>
       </div>
     </nav>
   );
@@ -91,25 +113,53 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
     <div
       onClick={() => onOpen(c.id)}
       title={c.error ?? c.titleError ?? undefined}
-      className={`group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm ${
-        open ? "bg-accent-glow text-fg ring-1 ring-accent-dim" : "text-fg-2 hover:bg-elevated hover:text-fg"
+      className={`group relative flex h-9 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors ${
+        open ? "bg-elevated text-fg" : "text-fg-2 hover:bg-elevated/60 hover:text-fg"
       }`}
     >
-      <StatusDot c={c} />
-      <span className={`flex-1 truncate ${c.name ? "" : "italic"} ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
-      {c.queue.length > 0 && <span className="rounded bg-elevated px-1 font-mono text-xs text-warn" title="queued">{c.queue.length}</span>}
-      {c.channel && <span className="font-mono text-[10px] text-faint">{c.channel.split(".")[0]}</span>}
+      {open && <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent" />}
+      {c.channel ? <MessageCircle size={14} className="shrink-0 text-muted" /> : <StatusDot c={c} className="mx-[3px]" />}
+      <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
       <button
         onClick={(e) => {
           e.stopPropagation();
           onArchive(c.id, !c.archived);
         }}
         title={c.archived ? "Unarchive (Alt+A)" : "Archive (Alt+A)"}
-        className="hidden text-xs text-muted hover:text-accent-light group-hover:inline"
+        className="-mr-1 hidden size-6 place-items-center rounded text-muted group-hover:grid hover:bg-line-strong hover:text-fg"
       >
-        {c.archived ? "unarchive" : "archive"}
+        {c.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
       </button>
-      {n !== null && <kbd className="font-mono text-[10px] text-faint group-hover:hidden">^{n}</kbd>}
+      {n !== null && <Kbd className="group-hover:hidden">{n}</Kbd>}
     </div>
+  );
+}
+
+/** Ctrl+1-9 hints only while Ctrl is held: a quiet list otherwise. */
+function useCtrlHeld() {
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => setHeld(e.key === "Control" ? e.type === "keydown" : e.ctrlKey);
+    const off = () => setHeld(false);
+    addEventListener("keydown", on);
+    addEventListener("keyup", on);
+    addEventListener("blur", off);
+    return () => (removeEventListener("keydown", on), removeEventListener("keyup", on), removeEventListener("blur", off));
+  }, []);
+  return held;
+}
+
+export function Kbd({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <kbd className={`rounded border border-line-strong bg-base/60 px-1.5 font-mono text-[10px] leading-4 text-muted ${className}`}>{children}</kbd>;
+}
+
+export function IconButton({ children, className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      {...props}
+      className={`grid size-8 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-elevated hover:text-fg disabled:opacity-40 ${className}`}
+    >
+      {children}
+    </button>
   );
 }

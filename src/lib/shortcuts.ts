@@ -34,8 +34,7 @@ export const KEYMAP: Binding[] = [
 
 /** Composer keys, handled in the textarea itself; listed here for the help overlay. */
 export const COMPOSER_KEYS = [
-  { keys: "Enter", label: "Send (steers the running turn while rocky is busy)" },
-  { keys: "Alt+Enter", label: "Queue: send after the running turn" },
+  { keys: "Enter", label: "Send (steers while rocky works)" },
   { keys: "Shift+Enter", label: "New line" },
 ];
 

@@ -1,10 +1,11 @@
+import { CircleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { clearToken, pair, tokenValid } from "./lib/gateway";
 import { useVersionReload } from "./lib/useVersionReload";
 import { useBroker } from "./lib/broker";
 import { COMPOSER_KEYS, KEYMAP, useShortcuts } from "./lib/shortcuts";
 import { Chat, type ChatHandle } from "./components/Chat";
-import { Sidebar } from "./components/Sidebar";
+import { Kbd, Sidebar } from "./components/Sidebar";
 
 export const DASHBOARD_URL = "https://zeroclaw.homelab.rutgerpronk.com";
 
@@ -115,10 +116,14 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
       <Chat ref={chat} id={openId} conv={conv} snap={snap} send={send} onDraft={setDraftEmpty} onToggleSidebar={() => setSidebar((x) => !x)} />
 
       {errors.length > 0 && (
-        <div className="absolute right-3 bottom-20 z-30 flex max-w-md flex-col gap-2">
+        <div className="absolute top-4 right-4 z-30 flex w-96 max-w-[calc(100%-2rem)] flex-col gap-2">
           {errors.slice(-4).map((e) => (
-            <div key={e.at} onClick={() => dismissError(e.at)} className="cursor-pointer rounded-md border border-err/50 bg-elevated px-3 py-2 font-mono text-xs text-err shadow-lg">
-              {e.message}
+            <div key={e.at} className="flex gap-2.5 rounded-xl border border-err/30 bg-elevated px-3.5 py-2.5 shadow-xl shadow-black/30">
+              <CircleAlert size={16} className="mt-0.5 shrink-0 text-err" />
+              <p className="min-w-0 flex-1 font-mono text-xs break-words text-err/90">{e.message}</p>
+              <button onClick={() => dismissError(e.at)} title="Dismiss" className="-m-1 grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-line-strong hover:text-fg">
+                <X size={14} />
+              </button>
             </div>
           ))}
         </div>
@@ -132,16 +137,23 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
 function Help({ onClose }: { onClose: () => void }) {
   const rows = [...KEYMAP.map(({ keys, label }) => ({ keys, label })), ...COMPOSER_KEYS];
   return (
-    <div onClick={onClose} className="absolute inset-0 z-40 flex items-center justify-center bg-base/70">
-      <div onClick={(e) => e.stopPropagation()} className="w-96 rounded-lg border border-line-strong bg-surface p-4 shadow-2xl">
-        <p className="mb-3 font-semibold text-accent">Shortcuts</p>
-        {rows.map((r) => (
-          <div key={r.keys} className="flex justify-between py-0.5 text-sm">
-            <span className="text-fg-2">{r.label}</span>
-            <kbd className="font-mono text-xs text-accent-light">{r.keys}</kbd>
-          </div>
-        ))}
-        <p className="mt-3 text-xs text-muted">Ctrl+1-9 only reach the page in an app window (Chromium --app / Omarchy web app), browser tabs keep them.</p>
+    <div onClick={onClose} className="absolute inset-0 z-40 flex items-center justify-center bg-base/70 backdrop-blur-sm">
+      <div onClick={(e) => e.stopPropagation()} className="w-[26rem] rounded-2xl border border-line-strong bg-surface p-5 shadow-2xl shadow-black/40">
+        <div className="mb-4 flex items-center">
+          <p className="font-semibold">Keyboard shortcuts</p>
+          <button onClick={onClose} className="ml-auto grid size-7 place-items-center rounded-md text-muted hover:bg-elevated hover:text-fg">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {rows.map((r) => (
+            <div key={r.keys} className="flex items-center justify-between gap-4 text-sm">
+              <span className="text-fg-2">{r.label}</span>
+              <Kbd className="text-[11px] text-fg-2">{r.keys}</Kbd>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-xs leading-relaxed text-muted">Hold Ctrl to see the numbers in the sidebar. Ctrl+1-9 only reach the page in an app window (Chromium --app / Omarchy web app); browser tabs keep them.</p>
       </div>
     </div>
   );
@@ -152,20 +164,26 @@ function Pair({ onPaired }: { onPaired: () => void }) {
   const [error, setError] = useState("");
   return (
     <form
-      className="flex h-full flex-col items-center justify-center gap-3"
+      className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center"
       onSubmit={(e) => {
         e.preventDefault();
         pair(code.trim()).then(onPaired, (err) => setError(err.message));
       }}
     >
-      <p className="text-fg-2">Not paired: enter a pairing code (<code className="font-mono text-accent">zeroclaw gateway get-paircode --new</code>)</p>
+      <span className="grid size-12 place-items-center rounded-xl bg-accent-glow ring-1 ring-accent-dim">
+        <span className="size-4 rounded-full bg-accent shadow-[0_0_16px] shadow-accent" />
+      </span>
+      <p className="text-lg font-medium">Pair someclaw</p>
+      <p className="text-sm text-fg-2">
+        Enter a pairing code from <code className="rounded bg-code px-1.5 py-0.5 font-mono text-[13px] text-accent-light">zeroclaw gateway get-paircode --new</code>
+      </p>
       <input
         autoFocus
         value={code}
         onChange={(e) => setCode(e.target.value)}
-        className="w-64 rounded-md border border-line-strong bg-input px-3 py-2 text-center font-mono tracking-widest outline-none focus:border-accent"
+        className="h-11 w-64 rounded-xl border border-line-strong bg-input px-3 text-center font-mono text-lg tracking-[0.3em] outline-none focus:border-accent"
       />
-      {error && <p className="font-mono text-sm text-err">{error}</p>}
+      {error && <p className="max-w-md font-mono text-xs break-words text-err">{error}</p>}
     </form>
   );
 }

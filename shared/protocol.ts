@@ -1,11 +1,9 @@
-// Browser <-> someclaw server protocol over /someclaw/ws. The server (broker) owns the gateway sockets, so turns,
-// queues and status survive tab switches, reloads and closed browsers.
+// Browser <-> someclaw server protocol over /someclaw/ws. The server (broker) owns the gateway sockets, so turns
+// and status survive tab switches, reloads and closed browsers.
 
 /** Raw gateway /ws/chat event (chunk, chunk_reset, message, done, aborted, tool_call, tool_result, error, session_start, ...),
  * plus `user` for a message the broker sent, so a replayed turn shows it. */
 export type GatewayEvent = { type: string; [k: string]: unknown };
-
-export type QueueItem = { qid: string; text: string };
 
 export type ConvStatus = "idle" | "running" | "error";
 
@@ -20,12 +18,6 @@ export type Conversation = {
   status: ConvStatus;
   /** Last error of this conversation, until the next turn starts. */
   error: string | null;
-  queue: QueueItem[];
-  /** Queue stopped after an error, abort or restart (direct sends still go through). */
-  paused: boolean;
-  /** When a paused queue resumes on its own (after an error or restart); null = waits for `resume` (after a stop,
-   * or when error retries ran out). */
-  resumeAt: string | null;
   /** First user message, shown until the auto-title lands. */
   preview: string | null;
   archived: boolean;
@@ -41,14 +33,8 @@ export type ToolLog = { at: number; events: GatewayEvent[] };
 
 export type ClientMsg =
   | { type: "subscribe"; id: string | null }
+  /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in). */
   | { type: "send"; id: string; text: string }
-  /** Into the running turn right away (the gateway injects it, like OpenClaw's steer): a queued item (qid) or new text.
-   * Idle conversation: starts a turn. */
-  | { type: "steer"; id: string; qid?: string; text?: string }
-  | { type: "unqueue"; id: string; qid: string }
-  | { type: "resume"; id: string }
-  /** Pause the queue and cancel a pending automatic resume. */
-  | { type: "pause"; id: string }
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "rename"; id: string; name: string };

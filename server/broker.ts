@@ -1,4 +1,4 @@
-// Broker: owns one gateway /ws/chat socket per active conversation, so turns, queues and status survive tab switches,
+// Broker: owns one gateway /ws/chat socket per active conversation, so turns and status survive tab switches,
 // reloads and closed browsers. Browsers talk to it over /someclaw/ws (shared/protocol.ts).
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
@@ -11,7 +11,6 @@ import {
   type Conversation,
   type GatewayEvent,
   type HistoryMessage,
-  type QueueItem,
   type ServerMsg,
 } from "../shared/protocol";
 
@@ -29,23 +28,10 @@ type Conv = {
   upReady?: Promise<WebSocket>;
   idleTimer?: Timer;
   titleError: string | null;
-  /** Turn ended, history loading: still "running" for the UI and the queue. */
+  /** Turn ended, history loading: still "running" for the UI. */
   finishing?: boolean;
-  /** Pending automatic resume of a paused queue (after an error or restart). */
-  resumeAt?: number;
-  resumeTimer?: Timer;
-  /** Consecutive failed turns since the last success; auto-resume gives up after RESUME_BACKOFF_MS runs out. */
-  failures: number;
-  /** Queue item of this turn not yet handed to the gateway: put back in front if the turn fails before that. */
-  unsent?: QueueItem;
-  /** The pause came from a user stop: a later successful turn doesn't lift it. */
-  stopped?: boolean;
 };
 
-// Paused queues resume on their own after an error (backoff per consecutive failure) or a restart.
-// A user stop (abort) stays paused: that's an explicit "stop". Out of backoff steps = stays paused until `resume`.
-const RESUME_BACKOFF_MS = [10_000, 30_000, 90_000];
-const RESUME_AFTER_RESTART_MS = 5_000;
 
 // Gateway allows wss.max_sessions_per_client (8) sockets: close idle ones.
 const UPSTREAM_IDLE_MS = 60_000;
@@ -60,47 +46,13 @@ const titling = new Set<string>();
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const send = (ws: ServerWebSocket<Client>, m: ServerMsg) => ws.send(JSON.stringify(m));
-const queue = (id: string) => (state.queues[id] ??= []);
 const session = (id: string) => sessions.find((s) => s.session_id === id);
 const viewed = (id: string) => [...clients].some((ws) => ws.data.sub === id);
 
 function conv(id: string): Conv {
   let c = convs.get(id);
-  if (!c) convs.set(id, (c = { id, status: "idle", error: null, turn: [], tools: [], titleError: null, failures: 0 }));
+  if (!c) convs.set(id, (c = { id, status: "idle", error: null, turn: [], tools: [], titleError: null }));
   return c;
-}
-
-function cancelResume(c: Conv) {
-  clearTimeout(c.resumeTimer);
-  c.resumeTimer = c.resumeAt = undefined;
-}
-
-function resume(c: Conv) {
-  cancelResume(c);
-  c.stopped = false;
-  delete state.paused[c.id];
-  save();
-  broadcastList();
-  drain(c);
-}
-
-/** Pause the queue; with `delay`, resume it automatically after that. */
-function pauseQueue(c: Conv, delay?: number) {
-  cancelResume(c);
-  state.paused[c.id] = true;
-  save();
-  if (delay === undefined || !queue(c.id).length) return;
-  c.resumeAt = Date.now() + delay;
-  c.resumeTimer = setTimeout(() => resume(c), delay);
-}
-
-// After a restart the interrupted turns are gone: resume persisted queues shortly (gateway may still be starting;
-// a failed turn backs off like any other error).
-// Queues already paused before the restart (stop, retries ran out) stay paused; a pause without a queue is dropped.
-for (const id of Object.keys(state.paused)) if (!state.queues[id]?.length) delete state.paused[id];
-for (const [id, q] of Object.entries(state.queues)) {
-  if (state.paused[id]) conv(id).stopped = true;
-  else if (q.length) pauseQueue(conv(id), RESUME_AFTER_RESTART_MS);
 }
 
 // ---------- conversation list ----------
@@ -118,9 +70,6 @@ function toConversation(id: string, s: GatewaySession | undefined): Conversation
     message_count: s?.message_count ?? 0,
     status,
     error: c?.error ?? null,
-    queue: state.queues[id] ?? [],
-    paused: !!state.paused[id],
-    resumeAt: c?.resumeAt ? new Date(c.resumeAt).toISOString() : null,
     preview: state.previews[id] ?? null,
     archived: id in state.archived,
     unread: !!s && status !== "running" && s.last_activity > (state.seen[id] ?? "") && !viewed(id),
@@ -129,10 +78,10 @@ function toConversation(id: string, s: GatewaySession | undefined): Conversation
 }
 
 function conversations(): Conversation[] {
-  const list = sessions.map((s) => toConversation(s.session_id, s)).filter((c) => c.message_count || c.status !== "idle" || c.queue.length);
+  const list = sessions.map((s) => toConversation(s.session_id, s)).filter((c) => c.message_count || c.status !== "idle");
   // Started here but not listed by the gateway yet.
   for (const c of convs.values())
-    if (!session(c.id) && (c.status !== "idle" || queue(c.id).length)) list.push(toConversation(c.id, undefined));
+    if (!session(c.id) && c.status !== "idle") list.push(toConversation(c.id, undefined));
   // Newest first by creation: stable order, so Ctrl+1-9 don't shift while conversations are active.
   return list.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
@@ -302,25 +251,7 @@ function onEvent(c: Conv, m: GatewayEvent) {
 async function finish(c: Conv, status: ConvStatus, error: string | null = null, aborted = false) {
   if (c.status !== "running" || c.finishing) return;
   c.finishing = true;
-  const pause = aborted || status === "error";
-  if (c.unsent) {
-    queue(c.id).unshift(c.unsent);
-    c.unsent = undefined;
-  }
-  if (aborted) {
-    pauseQueue(c);
-    c.stopped = true;
-  } else if (status === "error") {
-    if (queue(c.id).length) pauseQueue(c, RESUME_BACKOFF_MS[c.failures++]);
-    else pauseQueue(c); // nothing to resume; a later successful turn lifts it
-  } else {
-    c.failures = 0;
-    // a turn went through (e.g. a direct send while paused): an error pause has served its purpose
-    if (state.paused[c.id] && !c.stopped) {
-      cancelResume(c);
-      delete state.paused[c.id];
-    }
-  }
+  const failed = aborted || status === "error";
   const tools = c.tools;
   c.tools = [];
   let h: HistoryMessage[] | null = null;
@@ -328,7 +259,7 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
     try {
       h = await history(c.id);
       // the reply may land in the store a moment after `done`
-      if (status === "idle" && !pause && h.at(-1)?.role !== "assistant" && i < 2) h = null;
+      if (!failed && h.at(-1)?.role !== "assistant" && i < 2) h = null;
     } catch (e) {
       console.error(`broker: history ${c.id}:`, msg(e));
     }
@@ -346,21 +277,12 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   save();
   await refresh();
   await pushSnapshot(c.id);
-  if (h && !pause) autoTitle(c, h);
-  drain(c);
+  if (h && !failed) autoTitle(c, h);
+  closeWhenIdle(c);
 }
 
-function drain(c: Conv) {
-  if (c.status === "running" || state.paused[c.id]) return closeWhenIdle(c);
-  const next = queue(c.id).shift();
-  if (!next) return closeWhenIdle(c);
-  save();
-  startTurn(c, next.text, next);
-}
-
-async function startTurn(c: Conv, text: string, from?: QueueItem) {
+async function startTurn(c: Conv, text: string) {
   c.status = "running";
-  c.unsent = from;
   c.error = null;
   c.turn = [];
   c.tools = [];
@@ -371,7 +293,6 @@ async function startTurn(c: Conv, text: string, from?: QueueItem) {
   try {
     const up = await upstream(c);
     up.send(JSON.stringify({ type: "message", content: text }));
-    c.unsent = undefined;
   } catch (e) {
     record(c, { type: "error", message: msg(e) });
     finish(c, "error", msg(e));
@@ -441,40 +362,13 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       broadcastList();
       return send(ws, await snapshot(m.id));
 
+    // No queue: a message while rocky works goes straight into the running turn (steer, the gateway folds it in).
     case "send": {
       const text = m.text.trim();
       if (!text) return;
       const ro = readOnly(m.id);
       if (ro) return fail(ro);
       const c = conv(m.id);
-      if (c.status === "running") {
-        queue(m.id).push({ qid: crypto.randomUUID(), text });
-        save();
-        return broadcastList();
-      }
-      if (queue(m.id).length && !state.paused[m.id]) {
-        // idle with a live queue (between turns): keep the order
-        queue(m.id).push({ qid: crypto.randomUUID(), text });
-        save();
-        broadcastList();
-        return drain(c);
-      }
-      return startTurn(c, text); // a paused queue stays paused until `resume`
-    }
-
-    case "steer": {
-      const ro = readOnly(m.id);
-      if (ro) return fail(ro);
-      const c = conv(m.id);
-      let text = m.text?.trim();
-      if (m.qid) {
-        const q = queue(m.id);
-        const i = q.findIndex((x) => x.qid === m.qid);
-        if (i < 0) return fail("queued message not found (already sent?)");
-        text = q.splice(i, 1)[0]!.text;
-        save();
-      }
-      if (!text) return;
       // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
       for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
       if (c.status !== "running") return startTurn(c, text);
@@ -487,20 +381,6 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       }
       return broadcastList();
     }
-
-    case "unqueue":
-      state.queues[m.id] = queue(m.id).filter((x) => x.qid !== m.qid);
-      save();
-      return broadcastList();
-
-    case "resume":
-      conv(m.id).failures = 0;
-      return resume(conv(m.id));
-
-    case "pause":
-      pauseQueue(conv(m.id));
-      conv(m.id).stopped = true;
-      return broadcastList();
 
     case "abort":
       try {
@@ -531,7 +411,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
 
 // ---------- Bun websocket glue ----------
 
-/** Validates the browser's pairing token; the broker keeps the latest valid one to run queues with no browser open. */
+/** Validates the browser's pairing token; the broker keeps the latest valid one to finish turns with no browser open. */
 export async function authorize(token: string | null) {
   if (!token || !(await tokenValid(token).catch(() => false))) return false;
   if (state.token !== token) {
