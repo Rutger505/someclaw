@@ -1,0 +1,6 @@
+[Unit]
+Description=Update someclaw
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/someclaw/bin/someclaw-update

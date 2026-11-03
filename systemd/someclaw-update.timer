@@ -1,0 +1,11 @@
+[Unit]
+Description=Run someclaw-update.service every minute
+
+[Timer]
+OnCalendar=*:0/1
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target

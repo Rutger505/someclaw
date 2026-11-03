@@ -1,0 +1,22 @@
+#!/bin/bash
+# Pushes local commits, fast-forwards to origin/main, then relinks the units and restarts someclaw.service when anything changed.
+
+cd "$(dirname "$(realpath "$0")")/.." || exit 1
+
+fail() {
+  echo "$1"
+  exit 1
+}
+
+git diff --quiet HEAD || fail "Repository has uncommitted changes"
+git fetch --quiet || fail "Fetch failed"
+
+if [ -n "$(git rev-list '@{upstream}..@')" ]; then
+  git push --quiet || fail "Push failed"
+fi
+
+git diff --quiet @ '@{upstream}' && exit 0
+
+git merge --quiet --ff-only '@{upstream}' || fail "Local branch diverged from upstream"
+./install.sh || fail "install.sh failed"
+systemctl --user restart someclaw.service || fail "Restarting someclaw failed"

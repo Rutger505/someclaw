@@ -1,0 +1,10 @@
+[Unit]
+Description=someclaw, custom ZeroClaw web UI
+
+[Service]
+ExecStart=/usr/bin/bun %h/.local/share/someclaw/server.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
