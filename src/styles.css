@@ -23,22 +23,8 @@
   --color-info: #0080ff;
 }
 
-html, body, #root { height: 100%; }
-body { @apply bg-base text-fg antialiased; font-size: 15px; }
-::selection { background: var(--color-accent-dim); }
-
-/* Rendered markdown in agent messages */
-.md { @apply break-words; }
-.md > * + * { @apply mt-2; }
-.md a { @apply text-accent-light underline underline-offset-2; }
-.md code { @apply rounded bg-code px-1 py-0.5 font-mono text-[0.85em]; }
-.md pre { @apply overflow-x-auto rounded-md border border-line bg-code p-3; }
-.md pre code { @apply bg-transparent p-0; }
-.md ul { @apply list-disc pl-5; }
-.md ol { @apply list-decimal pl-5; }
-.md li + li { @apply mt-0.5; }
-.md h1, .md h2, .md h3, .md h4 { @apply font-semibold text-fg; }
-.md blockquote { @apply border-l-2 border-line-strong pl-3 text-fg-2; }
-.md table { @apply border-collapse text-sm; }
-.md th, .md td { @apply border border-line px-2 py-1; }
-.md hr { @apply border-line; }
+@layer base {
+  html, body, #root { @apply h-full; }
+  body { @apply bg-base text-[15px] text-fg antialiased; }
+  ::selection { @apply bg-accent-dim; }
+}
