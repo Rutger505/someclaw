@@ -1,35 +1,34 @@
-// Serves index.html and proxies the gateway on the same origin (the gateway has no CORS).
+// Serves the built UI (dist/) and proxies the gateway on the same origin (the gateway has no CORS).
 import { watch } from "node:fs";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
-const html = Bun.file(new URL("./index.html", import.meta.url));
-// Bun.file reads on every request, so index.html changes go live without a restart.
-// Open pages listen on /someclaw/events and reload themselves (when idle) once the version changes.
-const hashHtml = async () => Bun.hash(await html.text()).toString(36);
-let version = await hashHtml();
+const DIST = `${import.meta.dir}/dist`;
+
+// The version is the hash of dist/index.html: it references the content-hashed bundles, so it changes with any UI change.
+// Open pages listen on /someclaw/events and reload themselves (when idle) once it changes.
+const hashIndex = async () => Bun.hash(await Bun.file(`${DIST}/index.html`).text()).toString(36);
+let version = await hashIndex().catch(() => "none");
 const listeners = new Set<ReadableStreamDefaultController>();
 const send = (c: ReadableStreamDefaultController, chunk: string) => {
   try { c.enqueue(chunk); } catch { listeners.delete(c); }
 };
 let debounce: Timer | undefined;
-// Watch the dir, not the file: git replaces index.html by rename.
-watch(dirname(fileURLToPath(import.meta.url)), (_, file) => {
-  if (file !== "index.html") return;
+// Watch the repo dir, not dist/: build.ts swaps dist/ in by rename.
+watch(import.meta.dir, (_, file) => {
+  if (file !== "dist") return;
   clearTimeout(debounce);
   debounce = setTimeout(async () => {
-    const v = await hashHtml().catch(() => version);
+    const v = await hashIndex().catch(() => version);
     if (v === version) return;
     version = v;
     for (const c of listeners) send(c, `data: ${v}\n\n`);
-  }, 100);
+  }, 150);
 });
 // Keeps proxies/NAT from dropping idle streams; one tiny frame per 30 s.
 setInterval(() => { for (const c of listeners) send(c, ": ping\n\n"); }, 30_000);
 
-type Data = { target: string; upstream?: WebSocket; queue: (string | Buffer)[] };
+type Data = { target: string; upstream?: WebSocket; queue: string[] };
 
 Bun.serve<Data, never>({
   port: PORT,
@@ -72,7 +71,15 @@ Bun.serve<Data, never>({
       });
     }
 
-    if (url.pathname === "/") return new Response(html, { headers: { "content-type": "text/html", "cache-control": "no-cache" } });
+    // Static: index.html must revalidate, bundles are content-hashed and immutable.
+    const path = url.pathname === "/" ? "/index.html" : url.pathname;
+    if (!path.includes("..")) {
+      const file = Bun.file(DIST + path);
+      if (await file.exists()) {
+        const cache = path === "/index.html" ? "no-cache" : "public, max-age=31536000, immutable";
+        return new Response(file, { headers: { "cache-control": cache } });
+      }
+    }
     return new Response("not found", { status: 404 });
   },
 
@@ -91,7 +98,7 @@ Bun.serve<Data, never>({
     message(ws, msg) {
       const up = ws.data.upstream;
       if (up?.readyState === WebSocket.OPEN) up.send(msg);
-      else ws.data.queue.push(msg);
+      else ws.data.queue.push(String(msg));
     },
     close(ws) {
       ws.data.upstream?.close();
