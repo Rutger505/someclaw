@@ -45,7 +45,7 @@ async function pair(code) {
   const res = await fetch("/api/pair", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, device_name: "web-ui prototype", device_type: "browser" }),
+    body: JSON.stringify({ code, device_name: "someclaw", device_type: "browser" }),
   });
   if (!res.ok) throw new Error(`pair ${res.status}: ${await res.text()}`);
   token = (await res.json()).token;
