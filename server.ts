@@ -1,5 +1,7 @@
-// Serves the built UI (dist/) and proxies the gateway on the same origin (the gateway has no CORS).
+// Serves the built UI (dist/), runs the conversation broker on /someclaw/ws (server/broker.ts) and proxies the gateway's
+// REST API on the same origin (the gateway has no CORS; the UI uses it for pairing).
 import { watch } from "node:fs";
+import { authorize, websocket, type Client } from "./server/broker";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
@@ -28,18 +30,17 @@ watch(import.meta.dir, (_, file) => {
 // Keeps proxies/NAT from dropping idle streams; one tiny frame per 30 s.
 setInterval(() => { for (const c of listeners) send(c, ": ping\n\n"); }, 30_000);
 
-type Data = { target: string; upstream?: WebSocket; queue: string[] };
-
-Bun.serve<Data, never>({
+Bun.serve<Client, never>({
   port: PORT,
   hostname: "0.0.0.0",
 
   async fetch(req, server) {
     const url = new URL(req.url);
 
-    if (url.pathname === "/ws/chat") {
-      const target = GATEWAY.replace(/^http/, "ws") + url.pathname + url.search;
-      if (server.upgrade(req, { data: { target, queue: [] } })) return;
+    if (url.pathname === "/someclaw/ws") {
+      const token = url.searchParams.get("token");
+      if (!(await authorize(token))) return new Response("unauthorized: pair again", { status: 401 });
+      if (server.upgrade(req, { data: { token: token!, sub: null } })) return;
       return new Response("expected websocket", { status: 400 });
     }
 
@@ -83,27 +84,7 @@ Bun.serve<Data, never>({
     return new Response("not found", { status: 404 });
   },
 
-  websocket: {
-    open(ws) {
-      const up = new WebSocket(ws.data.target, ["zeroclaw.v1"]);
-      ws.data.upstream = up;
-      up.onopen = () => {
-        for (const m of ws.data.queue) up.send(m);
-        ws.data.queue = [];
-      };
-      up.onmessage = (e) => ws.send(e.data);
-      up.onclose = (e) => ws.close(e.code === 1005 ? 1000 : e.code, e.reason);
-      up.onerror = () => ws.close(1011, "upstream error");
-    },
-    message(ws, msg) {
-      const up = ws.data.upstream;
-      if (up?.readyState === WebSocket.OPEN) up.send(msg);
-      else ws.data.queue.push(String(msg));
-    },
-    close(ws) {
-      ws.data.upstream?.close();
-    },
-  },
+  websocket,
 });
 
 console.log(`someclaw on http://0.0.0.0:${PORT} -> ${GATEWAY}`);

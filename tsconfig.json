@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "server.ts", "build.ts"]
+  "include": ["src", "server", "shared", "server.ts", "build.ts"]
 }
