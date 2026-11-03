@@ -1,0 +1,21 @@
+#!/bin/bash
+# Run from the dev clone (~/Source/someclaw): pushes main and updates the live checkout right away,
+# instead of waiting for the fallback timer.
+set -e
+cd "$(dirname "$(realpath "$0")")/.."
+live="$HOME/.local/share/someclaw"
+
+[ "$(git branch --show-current)" = main ] || { echo "not on main"; exit 1; }
+git diff --quiet HEAD || { echo "uncommitted changes"; exit 1; }
+git push --quiet origin main
+
+if ! systemctl --user start someclaw-update.service; then
+  journalctl --user -u someclaw-update -n 20 --no-pager
+  exit 1
+fi
+journalctl --user -u someclaw-update -n 1 --no-pager -o cat
+
+[ "$(git -C "$live" rev-parse @)" = "$(git rev-parse @)" ] || { echo "live checkout not at $(git rev-parse --short @)"; exit 1; }
+systemctl --user is-active --quiet someclaw.service || { echo "someclaw.service not active"; exit 1; }
+curl -sf -m5 "http://127.0.0.1:${PORT:-42618}/someclaw/version" >/dev/null || { echo "version endpoint not answering"; exit 1; }
+echo "live: $(git log -1 --oneline)"

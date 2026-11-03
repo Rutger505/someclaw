@@ -2,6 +2,9 @@
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
 const html = Bun.file(new URL("./index.html", import.meta.url));
+// Bun.file reads on every request, so index.html changes go live without a restart.
+// The page polls this and reloads itself when idle.
+const version = async () => Bun.hash(await html.text()).toString(36);
 
 type Data = { target: string; upstream?: WebSocket; queue: (string | Buffer)[] };
 
@@ -30,7 +33,11 @@ Bun.serve<Data, never>({
       });
     }
 
-    if (url.pathname === "/") return new Response(html, { headers: { "content-type": "text/html" } });
+    if (url.pathname === "/someclaw/version") {
+      return new Response(await version(), { headers: { "cache-control": "no-store" } });
+    }
+
+    if (url.pathname === "/") return new Response(html, { headers: { "content-type": "text/html", "cache-control": "no-cache" } });
     return new Response("not found", { status: 404 });
   },
 

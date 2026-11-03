@@ -17,7 +17,12 @@ git clone git@github.com:Rutger505/someclaw.git ~/.local/share/someclaw
 `install.sh` links `systemd/*` into `~/.config/systemd/user` and enables:
 
 - `someclaw.service`: `bun server.ts`. Logs: `journalctl --user -u someclaw`.
-- `someclaw-update.timer`: every minute `bin/someclaw-update` pushes local commits, fast-forwards to `origin/main`, reruns `install.sh` and restarts `someclaw.service`. Refuses a dirty tree or a diverged branch (`journalctl --user -u someclaw-update`).
+- `someclaw-update.service`: `bin/someclaw-update` pushes local commits, fast-forwards to `origin/main`, reruns `install.sh` and restarts `someclaw.service` only if something besides `index.html`/docs changed. Refuses a dirty tree or a diverged branch (`journalctl --user -u someclaw-update`).
+- `someclaw-update.timer`: fallback, runs it every 15 minutes.
+
+## Deploy
+
+`bin/deploy` from the dev clone: pushes main, runs `someclaw-update.service` right away, checks the live checkout and the service. `index.html` is read per request and open pages poll `/someclaw/version` (hash of `index.html`), reloading when no turn is running and the input is empty.
 
 ## Use
 

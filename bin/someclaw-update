@@ -1,5 +1,7 @@
 #!/bin/bash
-# Pushes local commits, fast-forwards to origin/main, then relinks the units and restarts someclaw.service when anything changed.
+# Pushes local commits, fast-forwards to origin/main, relinks the units and restarts someclaw.service only when
+# server/unit files changed (index.html is read per request; open pages reload themselves via /someclaw/version).
+# Run by bin/deploy right after a push; the timer is only a fallback.
 
 cd "$(dirname "$(realpath "$0")")/.." || exit 1
 
@@ -17,6 +19,12 @@ fi
 
 git diff --quiet @ '@{upstream}' && exit 0
 
+changed="$(git diff --name-only @ '@{upstream}')"
 git merge --quiet --ff-only '@{upstream}' || fail "Local branch diverged from upstream"
 ./install.sh || fail "install.sh failed"
-systemctl --user restart someclaw.service || fail "Restarting someclaw failed"
+if grep -qvE '^(index\.html|README\.md|CLAUDE\.md|bin/deploy)$' <<<"$changed"; then
+  systemctl --user restart someclaw.service || fail "Restarting someclaw failed"
+  echo "Updated to $(git rev-parse --short @), restarted"
+else
+  echo "Updated to $(git rev-parse --short @), no restart needed"
+fi

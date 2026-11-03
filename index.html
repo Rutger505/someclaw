@@ -30,6 +30,7 @@ let token = localStorage.getItem("zeroclaw_token");
 let sessionId = localStorage.getItem(`session.${AGENT}`) ?? crypto.randomUUID();
 localStorage.setItem(`session.${AGENT}`, sessionId);
 let ws, live = null; // live = element of the agent reply being streamed
+let busy = false; // a turn is running: don't reload under it
 
 function add(cls, text) {
   const el = document.createElement("div");
@@ -63,6 +64,7 @@ async function connect() {
   ws.onclose = (e) => {
     add("meta error", `closed ${e.code} ${e.reason}`);
     live = null;
+    busy = false;
     setTimeout(connect, 2000);
   };
   ws.onmessage = (e) => {
@@ -81,7 +83,7 @@ async function connect() {
         const text = (m.full_response ?? m.content ?? live?.textContent ?? "").trim();
         if (text) (live ??= add("agent", "")).textContent = text;
         live = null;
-        if (m.type === "done") add("meta", "done");
+        if (m.type === "done") { busy = false; add("meta", "done"); maybeReload(); }
         break;
       }
       case "tool_call":
@@ -92,6 +94,7 @@ async function connect() {
         break;
       case "error":
         live = null;
+        busy = false;
         add("meta error", `error: ${m.message ?? JSON.stringify(m)}`);
         break;
       case "session_start":
@@ -119,8 +122,27 @@ form.onsubmit = (e) => {
   if (!token) return pair(text).catch((err) => add("meta error", err.message));
   if (ws?.readyState !== WebSocket.OPEN) return add("meta error", "not connected");
   add("user", text);
+  busy = true;
   ws.send(JSON.stringify({ type: "message", content: text }));
 };
+
+// Auto-update: reload when index.html changed and no turn is running.
+let loadedVersion, newVersion;
+async function checkVersion() {
+  const v = await fetch("/someclaw/version", { cache: "no-store" }).then((r) => (r.ok ? r.text() : null)).catch(() => null);
+  if (!v) return;
+  loadedVersion ??= v;
+  if (v !== loadedVersion && v !== newVersion) { newVersion = v; maybeReload(); }
+}
+function maybeReload() {
+  if (!newVersion) return;
+  if (busy || input.value) return add("meta", "new version: reloads after this turn / when the input is empty");
+  location.reload();
+}
+input.oninput = () => !input.value && maybeReload();
+setInterval(() => !document.hidden && checkVersion(), 2000);
+document.addEventListener("visibilitychange", () => !document.hidden && checkVersion());
+checkVersion();
 
 token ? connect() : needPair();
 </script>
