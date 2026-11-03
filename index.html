@@ -126,23 +126,19 @@ form.onsubmit = (e) => {
   ws.send(JSON.stringify({ type: "message", content: text }));
 };
 
-// Auto-update: reload when index.html changed and no turn is running.
+// Auto-update: the server pushes the index.html version on connect and on every change (SSE,
+// reconnects by itself after a restart or sleep). Reload when it changed and no turn is running.
 let loadedVersion, newVersion;
-async function checkVersion() {
-  const v = await fetch("/someclaw/version", { cache: "no-store" }).then((r) => (r.ok ? r.text() : null)).catch(() => null);
-  if (!v) return;
-  loadedVersion ??= v;
-  if (v !== loadedVersion && v !== newVersion) { newVersion = v; maybeReload(); }
-}
+new EventSource("/someclaw/events").onmessage = (e) => {
+  loadedVersion ??= e.data;
+  if (e.data !== loadedVersion && e.data !== newVersion) { newVersion = e.data; maybeReload(); }
+};
 function maybeReload() {
   if (!newVersion) return;
   if (busy || input.value) return add("meta", "new version: reloads after this turn / when the input is empty");
   location.reload();
 }
 input.oninput = () => !input.value && maybeReload();
-setInterval(() => !document.hidden && checkVersion(), 2000);
-document.addEventListener("visibilitychange", () => !document.hidden && checkVersion());
-checkVersion();
 
 token ? connect() : needPair();
 </script>

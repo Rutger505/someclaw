@@ -1,10 +1,33 @@
 // Serves index.html and proxies the gateway on the same origin (the gateway has no CORS).
+import { watch } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
 const html = Bun.file(new URL("./index.html", import.meta.url));
 // Bun.file reads on every request, so index.html changes go live without a restart.
-// The page polls this and reloads itself when idle.
-const version = async () => Bun.hash(await html.text()).toString(36);
+// Open pages listen on /someclaw/events and reload themselves (when idle) once the version changes.
+const hashHtml = async () => Bun.hash(await html.text()).toString(36);
+let version = await hashHtml();
+const listeners = new Set<ReadableStreamDefaultController>();
+const send = (c: ReadableStreamDefaultController, chunk: string) => {
+  try { c.enqueue(chunk); } catch { listeners.delete(c); }
+};
+let debounce: Timer | undefined;
+// Watch the dir, not the file: git replaces index.html by rename.
+watch(dirname(fileURLToPath(import.meta.url)), (_, file) => {
+  if (file !== "index.html") return;
+  clearTimeout(debounce);
+  debounce = setTimeout(async () => {
+    const v = await hashHtml().catch(() => version);
+    if (v === version) return;
+    version = v;
+    for (const c of listeners) send(c, `data: ${v}\n\n`);
+  }, 100);
+});
+// Keeps proxies/NAT from dropping idle streams; one tiny frame per 30 s.
+setInterval(() => { for (const c of listeners) send(c, ": ping\n\n"); }, 30_000);
 
 type Data = { target: string; upstream?: WebSocket; queue: (string | Buffer)[] };
 
@@ -34,7 +57,19 @@ Bun.serve<Data, never>({
     }
 
     if (url.pathname === "/someclaw/version") {
-      return new Response(await version(), { headers: { "cache-control": "no-store" } });
+      return new Response(version, { headers: { "cache-control": "no-store" } });
+    }
+
+    if (url.pathname === "/someclaw/events") {
+      server.timeout(req, 0); // long-lived stream: no idle timeout
+      let ctrl: ReadableStreamDefaultController;
+      const body = new ReadableStream({
+        start(c) { ctrl = c; listeners.add(c); send(c, `retry: 3000\ndata: ${version}\n\n`); },
+        cancel() { listeners.delete(ctrl); },
+      });
+      return new Response(body, {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-store" },
+      });
     }
 
     if (url.pathname === "/") return new Response(html, { headers: { "content-type": "text/html", "cache-control": "no-cache" } });

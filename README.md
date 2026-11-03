@@ -22,7 +22,7 @@ git clone git@github.com:Rutger505/someclaw.git ~/.local/share/someclaw
 
 ## Deploy
 
-`bin/deploy` from the dev clone: pushes main, runs `someclaw-update.service` right away, checks the live checkout and the service. `index.html` is read per request and open pages poll `/someclaw/version` (hash of `index.html`), reloading when no turn is running and the input is empty.
+`bin/deploy` from the dev clone: pushes main, runs `someclaw-update.service` right away, checks the live checkout and the service. `index.html` is read per request and the server watches it and pushes its hash over SSE (`/someclaw/events`, also sent on connect, so a restart is caught on reconnect); open pages reload when no turn is running and the input is empty.
 
 ## Use
 
