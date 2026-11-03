@@ -15,11 +15,12 @@
   form { display: flex; gap: .5rem; padding: .75rem; border-top: 1px solid #333; }
   input { flex: 1; padding: .5rem; background: #1b1b1b; color: inherit; border: 1px solid #444; border-radius: 6px; font: inherit; }
   button { padding: .5rem 1rem; font: inherit; }
+  form a { align-self: center; color: #888; font-size: 13px; }
 </style>
 </head>
 <body>
 <div id="log"></div>
-<form id="form"><input id="input" autocomplete="off" autofocus><button>Send</button></form>
+<form id="form"><input id="input" autocomplete="off" autofocus><button>Send</button><a href="https://zeroclaw.homelab.rutgerpronk.com">official</a></form>
 <script>
 const AGENT = new URLSearchParams(location.search).get("agent") ?? "rocky";
 const log = document.getElementById("log");

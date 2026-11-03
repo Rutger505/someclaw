@@ -26,4 +26,4 @@ Open the URL, send a pairing code (`zeroclaw gateway get-paircode --new`) as the
 ## Not done
 
 - History of a resumed session isn't fetched (only the count is shown).
-- No markdown, approvals, abort, or links to the official dashboard yet.
+- No markdown, approvals or abort yet. The "official" link opens the official dashboard for everything else.
