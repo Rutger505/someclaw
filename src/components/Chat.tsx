@@ -129,12 +129,33 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             <div className="flex items-center gap-2 px-3 py-1 text-xs text-muted">
               <span>
                 queue · {conv.queue.length}
-                {conv.paused && <span className="text-warn"> · paused (after a stop, error or restart)</span>}
+                {conv.paused &&
+                  (conv.resumeAt ? (
+                    <span className="text-warn">
+                      {" "}
+                      · paused, resuming in <Countdown to={conv.resumeAt} />
+                    </span>
+                  ) : (
+                    <span className="text-warn"> · paused</span>
+                  ))}
               </span>
-              {conv.paused && (
-                <button onClick={() => send({ type: "resume", id })} className="ml-auto text-accent-light hover:underline">
-                  resume
-                </button>
+              {conv.paused ? (
+                <span className="ml-auto flex gap-3">
+                  {conv.resumeAt && (
+                    <button onClick={() => send({ type: "pause", id })} className="text-muted hover:text-fg-2">
+                      keep paused
+                    </button>
+                  )}
+                  <button onClick={() => send({ type: "resume", id })} className="text-accent-light hover:underline">
+                    {conv.resumeAt ? "resume now" : "resume"}
+                  </button>
+                </span>
+              ) : (
+                conv.queue.length > 0 && (
+                  <button onClick={() => send({ type: "pause", id })} className="ml-auto text-muted hover:text-fg-2">
+                    pause
+                  </button>
+                )
               )}
             </div>
             {conv.queue.map((q) => (
@@ -206,4 +227,13 @@ function Row({ item }: { item: Item }) {
     case "meta":
       return <div className={`font-mono text-xs ${item.error ? "text-err" : "text-muted"}`}>{item.text}</div>;
   }
+}
+
+function Countdown({ to }: { to: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return <>{Math.max(0, Math.ceil((Date.parse(to) - now) / 1000))}s</>;
 }

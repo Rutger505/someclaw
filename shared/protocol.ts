@@ -21,8 +21,11 @@ export type Conversation = {
   /** Last error of this conversation, until the next turn starts. */
   error: string | null;
   queue: QueueItem[];
-  /** Queue stopped after an error, abort or restart; resumes only on `resume` (direct sends still go through). */
+  /** Queue stopped after an error, abort or restart (direct sends still go through). */
   paused: boolean;
+  /** When a paused queue resumes on its own (after an error or restart); null = waits for `resume` (after a stop,
+   * or when error retries ran out). */
+  resumeAt: string | null;
   /** First user message, shown until the auto-title lands. */
   preview: string | null;
   archived: boolean;
@@ -44,6 +47,8 @@ export type ClientMsg =
   | { type: "steer"; id: string; qid?: string; text?: string }
   | { type: "unqueue"; id: string; qid: string }
   | { type: "resume"; id: string }
+  /** Pause the queue and cancel a pending automatic resume. */
+  | { type: "pause"; id: string }
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "rename"; id: string; name: string };

@@ -11,6 +11,7 @@ import {
   type Conversation,
   type GatewayEvent,
   type HistoryMessage,
+  type QueueItem,
   type ServerMsg,
 } from "../shared/protocol";
 
@@ -30,7 +31,21 @@ type Conv = {
   titleError: string | null;
   /** Turn ended, history loading: still "running" for the UI and the queue. */
   finishing?: boolean;
+  /** Pending automatic resume of a paused queue (after an error or restart). */
+  resumeAt?: number;
+  resumeTimer?: Timer;
+  /** Consecutive failed turns since the last success; auto-resume gives up after RESUME_BACKOFF_MS runs out. */
+  failures: number;
+  /** Queue item of this turn not yet handed to the gateway: put back in front if the turn fails before that. */
+  unsent?: QueueItem;
+  /** The pause came from a user stop: a later successful turn doesn't lift it. */
+  stopped?: boolean;
 };
+
+// Paused queues resume on their own after an error (backoff per consecutive failure) or a restart.
+// A user stop (abort) stays paused: that's an explicit "stop". Out of backoff steps = stays paused until `resume`.
+const RESUME_BACKOFF_MS = [10_000, 30_000, 90_000];
+const RESUME_AFTER_RESTART_MS = 5_000;
 
 // Gateway allows wss.max_sessions_per_client (8) sockets: close idle ones.
 const UPSTREAM_IDLE_MS = 60_000;
@@ -51,12 +66,42 @@ const viewed = (id: string) => [...clients].some((ws) => ws.data.sub === id);
 
 function conv(id: string): Conv {
   let c = convs.get(id);
-  if (!c) convs.set(id, (c = { id, status: "idle", error: null, turn: [], tools: [], titleError: null }));
+  if (!c) convs.set(id, (c = { id, status: "idle", error: null, turn: [], tools: [], titleError: null, failures: 0 }));
   return c;
 }
 
-// After a restart nothing runs: don't fire persisted queues blindly, let the user resume them.
-for (const [id, q] of Object.entries(state.queues)) if (q.length) state.paused[id] = true;
+function cancelResume(c: Conv) {
+  clearTimeout(c.resumeTimer);
+  c.resumeTimer = c.resumeAt = undefined;
+}
+
+function resume(c: Conv) {
+  cancelResume(c);
+  c.stopped = false;
+  delete state.paused[c.id];
+  save();
+  broadcastList();
+  drain(c);
+}
+
+/** Pause the queue; with `delay`, resume it automatically after that. */
+function pauseQueue(c: Conv, delay?: number) {
+  cancelResume(c);
+  state.paused[c.id] = true;
+  save();
+  if (delay === undefined || !queue(c.id).length) return;
+  c.resumeAt = Date.now() + delay;
+  c.resumeTimer = setTimeout(() => resume(c), delay);
+}
+
+// After a restart the interrupted turns are gone: resume persisted queues shortly (gateway may still be starting;
+// a failed turn backs off like any other error).
+// Queues already paused before the restart (stop, retries ran out) stay paused; a pause without a queue is dropped.
+for (const id of Object.keys(state.paused)) if (!state.queues[id]?.length) delete state.paused[id];
+for (const [id, q] of Object.entries(state.queues)) {
+  if (state.paused[id]) conv(id).stopped = true;
+  else if (q.length) pauseQueue(conv(id), RESUME_AFTER_RESTART_MS);
+}
 
 // ---------- conversation list ----------
 
@@ -75,6 +120,7 @@ function toConversation(id: string, s: GatewaySession | undefined): Conversation
     error: c?.error ?? null,
     queue: state.queues[id] ?? [],
     paused: !!state.paused[id],
+    resumeAt: c?.resumeAt ? new Date(c.resumeAt).toISOString() : null,
     preview: state.previews[id] ?? null,
     archived: id in state.archived,
     unread: !!s && status !== "running" && s.last_activity > (state.seen[id] ?? "") && !viewed(id),
@@ -253,10 +299,28 @@ function onEvent(c: Conv, m: GatewayEvent) {
   else if (m.type === "error") finish(c, "error", String(m.message ?? JSON.stringify(m)));
 }
 
-async function finish(c: Conv, status: ConvStatus, error: string | null = null, pause = status === "error") {
+async function finish(c: Conv, status: ConvStatus, error: string | null = null, aborted = false) {
   if (c.status !== "running" || c.finishing) return;
   c.finishing = true;
-  if (pause) state.paused[c.id] = true;
+  const pause = aborted || status === "error";
+  if (c.unsent) {
+    queue(c.id).unshift(c.unsent);
+    c.unsent = undefined;
+  }
+  if (aborted) {
+    pauseQueue(c);
+    c.stopped = true;
+  } else if (status === "error") {
+    if (queue(c.id).length) pauseQueue(c, RESUME_BACKOFF_MS[c.failures++]);
+    else pauseQueue(c); // nothing to resume; a later successful turn lifts it
+  } else {
+    c.failures = 0;
+    // a turn went through (e.g. a direct send while paused): an error pause has served its purpose
+    if (state.paused[c.id] && !c.stopped) {
+      cancelResume(c);
+      delete state.paused[c.id];
+    }
+  }
   const tools = c.tools;
   c.tools = [];
   let h: HistoryMessage[] | null = null;
@@ -291,11 +355,12 @@ function drain(c: Conv) {
   const next = queue(c.id).shift();
   if (!next) return closeWhenIdle(c);
   save();
-  startTurn(c, next.text);
+  startTurn(c, next.text, next);
 }
 
-async function startTurn(c: Conv, text: string) {
+async function startTurn(c: Conv, text: string, from?: QueueItem) {
   c.status = "running";
+  c.unsent = from;
   c.error = null;
   c.turn = [];
   c.tools = [];
@@ -306,6 +371,7 @@ async function startTurn(c: Conv, text: string) {
   try {
     const up = await upstream(c);
     up.send(JSON.stringify({ type: "message", content: text }));
+    c.unsent = undefined;
   } catch (e) {
     record(c, { type: "error", message: msg(e) });
     finish(c, "error", msg(e));
@@ -426,10 +492,13 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       return broadcastList();
 
     case "resume":
-      delete state.paused[m.id];
-      save();
-      broadcastList();
-      return drain(conv(m.id));
+      conv(m.id).failures = 0;
+      return resume(conv(m.id));
+
+    case "pause":
+      pauseQueue(conv(m.id));
+      conv(m.id).stopped = true;
+      return broadcastList();
 
     case "abort":
       try {
