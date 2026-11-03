@@ -125,6 +125,7 @@ function refresh() {
         if (!(s.session_id in state.seen) || viewed(s.session_id)) markSeen(s.session_id);
       }
       backfillPreviews();
+      backfillTitles();
       listError = null;
     } catch (e) {
       listError = msg(e);
@@ -311,6 +312,32 @@ async function startTurn(c: Conv, text: string) {
   }
 }
 
+// Failed titles retry after TITLE_RETRY_MS (e.g. titler agent missing until zeroclaw-config is merged), not every poll.
+const TITLE_RETRY_MS = 10 * 60_000;
+const titleFailedAt = new Map<string, number>();
+
+// Untitled conversations that won't get a new turn soon (older ones, failed titles): one at a time, sockets are scarce.
+function backfillTitles() {
+  if (titling.size || !state.token) return;
+  const next = sessions.find(
+    (s) =>
+      s.message_count >= 2 &&
+      !s.name &&
+      !s.channel_id &&
+      !state.titled[s.session_id] &&
+      convs.get(s.session_id)?.status !== "running" &&
+      !runningElsewhere.has(s.session_id) &&
+      Date.now() - (titleFailedAt.get(s.session_id) ?? 0) > TITLE_RETRY_MS,
+  );
+  if (!next) return;
+  history(next.session_id)
+    .then((h) => (h.some((m) => m.role === "assistant") ? autoTitle(conv(next.session_id), h) : undefined))
+    .catch((e) => {
+      titleFailedAt.set(next.session_id, Date.now());
+      console.error(`broker: title backfill ${next.session_id}:`, msg(e));
+    });
+}
+
 async function autoTitle(c: Conv, h: HistoryMessage[]) {
   const s = session(c.id);
   if (state.titled[c.id] || s?.name || s?.channel_id || titling.has(c.id) || !state.token) return;
@@ -323,6 +350,7 @@ async function autoTitle(c: Conv, h: HistoryMessage[]) {
     save();
   } catch (e) {
     c.titleError = msg(e);
+    titleFailedAt.set(c.id, Date.now());
     console.error(`broker: auto-title ${c.id}:`, c.titleError);
   } finally {
     titling.delete(c.id);
