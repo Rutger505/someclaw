@@ -1,13 +1,14 @@
-import { Archive, ArchiveRestore, ArrowUp, CircleAlert, Clock, CornerDownRight, GitBranch, PanelLeft, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CircleAlert, Clock, CornerDownRight, GitBranch, Lock, PanelLeft, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ClientMsg, Conversation, Resume } from "../../shared/protocol";
 import type { Snapshot } from "../lib/broker";
 import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
-import { convTitle, IconButton, StatusDot } from "./Sidebar";
+import { convTitle, IconButton, Kbd, StatusDot } from "./Sidebar";
 import { ToolGroup } from "./Tools";
 
-export type ChatHandle = { focus: () => void; rename: () => void };
+/** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
+export type ChatHandle = { focus: () => void; rename: () => void; unlock: () => boolean };
 
 type Props = {
   id: string;
@@ -32,15 +33,29 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const items = useMemo(() => (snap?.id === id ? buildItems(snap) : []), [snap, id]);
   const running = conv?.status === "running";
   const readOnly = !!conv?.channel;
+  // Channel threads start locked: typing there forks, so it takes a deliberate click or Ctrl+Shift+F.
+  const [unlocked, setUnlocked] = useState(false);
+  const locked = readOnly && !unlocked;
 
   useImperativeHandle(ref, () => ({
     focus: () => input.current?.focus(),
     rename: () => conv && setRenaming(conv.name ?? ""),
+    unlock: () => {
+      if (!readOnly) return false;
+      if (unlocked) input.current?.focus();
+      else setUnlocked(true);
+      return true;
+    },
   }));
+  useEffect(() => {
+    if (unlocked) input.current?.focus();
+  }, [unlocked]);
 
   // Drafts per conversation, kept across switches and reloads.
   useEffect(() => {
-    setDraft(localStorage.getItem(`draft.${id}`) ?? "");
+    const saved = localStorage.getItem(`draft.${id}`) ?? "";
+    setDraft(saved);
+    setUnlocked(!!saved); // a kept draft means it was unlocked on purpose
     setRenaming(null);
     stick.current = true;
     input.current?.focus();
@@ -141,55 +156,86 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           submit();
         }}
       >
-        <div className="rounded-2xl border border-line-strong bg-surface shadow-lg shadow-black/20 transition-colors focus-within:border-accent-dim">
-          <textarea
-            ref={input}
-            autoFocus
-            rows={1}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder={readOnly ? "Continue in a new someclaw conversation…" : running ? "Steer rocky…" : "Message rocky…"}
-            className="field-sizing-content block max-h-64 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none placeholder:text-faint disabled:opacity-50"
-          />
-          <div className="flex items-center gap-2 px-3 pb-2.5">
-            <span className="text-xs text-faint">
-              {readOnly
-                ? `${conv?.channel} is read-only here · Enter continues in a new conversation with this thread as context`
-                : running
-                  ? "rocky is working · Enter steers · Esc stops"
-                  : "Enter to send · Shift+Enter new line"}
-            </span>
-            <div className="ml-auto flex items-center gap-1.5">
-              {running && (
+        {locked ? (
+          <Locked channel={conv?.channel ?? "channel"} onUnlock={() => setUnlocked(true)} />
+        ) : (
+          <div className="rounded-2xl border border-line-strong bg-surface shadow-lg shadow-black/20 transition-colors focus-within:border-accent-dim">
+            <textarea
+              ref={input}
+              autoFocus
+              rows={1}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  submit();
+                } else if (e.key === "Escape" && readOnly && !draft) {
+                  e.preventDefault();
+                  setUnlocked(false); // back to read-only
+                }
+              }}
+              placeholder={readOnly ? "Continue in a new someclaw conversation…" : running ? "Steer rocky…" : "Message rocky…"}
+              className="field-sizing-content block max-h-64 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none placeholder:text-faint disabled:opacity-50"
+            />
+            <div className="flex items-center gap-2 px-3 pb-2.5">
+              <span className="text-xs text-faint">
+                {readOnly
+                  ? "Enter continues in a new conversation with this thread as context · Esc locks again"
+                  : running
+                    ? "rocky is working · Enter steers · Esc stops"
+                    : "Enter to send · Shift+Enter new line"}
+              </span>
+              <div className="ml-auto flex items-center gap-1.5">
+                {running && (
+                  <button
+                    type="button"
+                    onClick={() => send({ type: "abort", id })}
+                    title="Stop (Esc)"
+                    className="grid size-8 place-items-center rounded-full bg-elevated text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-err/15 hover:text-err hover:ring-err/40"
+                  >
+                    <Square size={12} fill="currentColor" />
+                  </button>
+                )}
                 <button
-                  type="button"
-                  onClick={() => send({ type: "abort", id })}
-                  title="Stop (Esc)"
-                  className="grid size-8 place-items-center rounded-full bg-elevated text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-err/15 hover:text-err hover:ring-err/40"
+                  title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : "Send (Enter)"}
+                  disabled={!draft.trim()}
+                  className="grid size-8 place-items-center rounded-full bg-accent text-base transition-colors hover:bg-accent-light disabled:bg-elevated disabled:text-faint"
                 >
-                  <Square size={12} fill="currentColor" />
+                  {readOnly ? <GitBranch size={16} strokeWidth={2.5} /> : running ? <CornerDownRight size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
                 </button>
-              )}
-              <button
-                title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : "Send (Enter)"}
-                disabled={!draft.trim()}
-                className="grid size-8 place-items-center rounded-full bg-accent text-base transition-colors hover:bg-accent-light disabled:bg-elevated disabled:text-faint"
-              >
-                {readOnly ? <GitBranch size={16} strokeWidth={2.5} /> : running ? <CornerDownRight size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
-              </button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </form>
     </div>
   );
 });
+
+/**
+ * Channel thread composer before unlocking. No input exists yet, so stray keys go nowhere; the button never takes focus
+ * and ignores keyboard activation (click detail 0), so a space or Enter can't press it by accident.
+ */
+function Locked({ channel, onUnlock }: { channel: string; onUnlock: () => void }) {
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-line-strong bg-surface px-4 py-3 shadow-lg shadow-black/20">
+      <Lock size={15} className="shrink-0 text-muted" />
+      <span className="min-w-0 flex-1 truncate text-sm text-muted">{channel} thread · read-only</span>
+      <button
+        type="button"
+        tabIndex={-1}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={(e) => e.detail > 0 && onUnlock()}
+        title="Continue in a new someclaw conversation with this thread as context (Ctrl+Shift+F)"
+        className="flex shrink-0 items-center gap-2 rounded-full bg-elevated py-1.5 pr-2 pl-3 text-sm text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-accent-glow hover:text-fg hover:ring-accent-dim"
+      >
+        <GitBranch size={14} /> Continue here
+        <Kbd className="hidden sm:inline">Ctrl Shift F</Kbd>
+      </button>
+    </div>
+  );
+}
 
 function Row({ item }: { item: Item }) {
   switch (item.kind) {

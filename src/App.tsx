@@ -92,6 +92,8 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
         return setSidebar((x) => !x);
       case "focus":
         return chat.current?.focus();
+      case "continue":
+        return chat.current?.unlock() ? undefined : false;
       case "help":
         return setHelp((x) => !x);
     }
