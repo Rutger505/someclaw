@@ -191,7 +191,7 @@ function Row({ item }: { item: Item }) {
               <CornerDownRight size={12} /> steered
             </span>
           )}
-          <div className="rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap ring-1 ring-line">{item.text}</div>
+          <div className="max-w-full rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap wrap-anywhere ring-1 ring-line">{item.text}</div>
         </div>
       );
     case "agent":

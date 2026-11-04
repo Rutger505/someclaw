@@ -100,6 +100,10 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
   return (
     <div className="relative flex h-full">
       {sidebar && (
+        // Mobile: the sidebar overlays the chat; tapping beside it closes it.
+        <div className="absolute inset-0 z-20 bg-black/40 md:hidden" onClick={() => setSidebar(false)} />
+      )}
+      {sidebar && (
         <div className="absolute inset-y-0 left-0 z-20 shadow-2xl md:static md:shadow-none">
           <Sidebar
             list={list}

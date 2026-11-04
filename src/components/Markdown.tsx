@@ -9,7 +9,7 @@ renderer.html = ({ text }) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").
 
 // marked emits plain tags, so they're styled from here with descendant variants.
 const md = [
-  "break-words [&>*+*]:mt-3 [&_strong]:font-semibold [&_strong]:text-fg",
+  "wrap-anywhere [&>*+*]:mt-3 [&_strong]:font-semibold [&_strong]:text-fg",
   "[&_a]:text-accent-light [&_a]:underline [&_a]:underline-offset-2",
   "[&_code]:rounded [&_code]:bg-code [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em]",
   "[&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:border [&_pre]:border-line [&_pre]:bg-code [&_pre]:p-3.5 [&_pre]:text-[13px] [&_pre]:leading-normal",
