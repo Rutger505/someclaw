@@ -121,9 +121,11 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
         {n}
       </span>
       <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
-      <span className="-mr-1 grid size-6 shrink-0 place-items-center group-hover:hidden">
-        {c.channel ? <MessageCircle size={14} className="text-muted" /> : <StatusDot c={c} />}
-      </span>
+      {(c.channel || c.status === "running" || c.status === "error" || c.unread) && (
+        <span className="flex shrink-0 items-center group-hover:hidden">
+          {c.channel ? <MessageCircle size={14} className="text-muted" /> : <StatusDot c={c} />}
+        </span>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();
