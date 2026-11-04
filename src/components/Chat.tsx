@@ -1,6 +1,6 @@
-import { Archive, ArchiveRestore, ArrowUp, CircleAlert, CornerDownRight, PanelLeft, Square } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CircleAlert, Clock, CornerDownRight, PanelLeft, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ClientMsg, Conversation } from "../../shared/protocol";
+import type { ClientMsg, Conversation, Resume } from "../../shared/protocol";
 import type { Snapshot } from "../lib/broker";
 import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
@@ -124,6 +124,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             <Row key={i} item={item} />
           ))}
           {conv?.error && !running && <Banner label="Turn failed" text={conv.error} />}
+          {conv?.resume && !running && <Waiting resume={conv.resume} onCancel={() => send({ type: "abort", id })} />}
           {running && items.at(-1)?.kind !== "agent" && <Thinking />}
         </div>
       </div>
@@ -216,6 +217,32 @@ function Banner({ label, text }: { label?: string; text: string }) {
         {label && <p className="font-medium text-fg">{label}</p>}
         <p className="font-mono text-xs break-words text-err/90">{text}</p>
       </div>
+    </div>
+  );
+}
+
+/** Rate-limited: the broker resumes the turn itself at resume.at. */
+function Waiting({ resume, onCancel }: { resume: Resume; onCancel: () => void }) {
+  const at = new Date(resume.at);
+  const sameDay = at.toDateString() === new Date().toDateString();
+  const when = at.toLocaleString(undefined, sameDay ? { timeStyle: "short" } : { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="flex gap-2.5 rounded-xl border border-info/25 bg-info/[0.06] px-3.5 py-2.5 text-sm">
+      <Clock size={16} className="mt-0.5 shrink-0 text-info" />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-fg">
+          Resumes automatically {sameDay ? "at" : "on"} {when}
+          <span className="font-normal text-muted"> · attempt {resume.attempt}</span>
+        </p>
+        <p className="font-mono text-xs break-words text-fg-2">{resume.reason}</p>
+      </div>
+      <button
+        onClick={onCancel}
+        title="Cancel auto-resume (Esc)"
+        className="-mr-1 grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-line-strong hover:text-fg"
+      >
+        <X size={14} />
+      </button>
     </div>
   );
 }

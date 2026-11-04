@@ -6,16 +6,18 @@ import type { Link } from "../lib/broker";
 
 export const convTitle = (c: Conversation) => c.name ?? c.preview ?? (c.channel ? c.channel : "New conversation");
 
-/** running = pulsing amber, error = red, unread = cyan, idle = nothing. */
+/** running = pulsing amber, waiting (auto-resume after rate limit) = blue, error = red, unread = cyan, idle = nothing. */
 export function StatusDot({ c, className = "" }: { c: Pick<Conversation, "status" | "unread">; className?: string }) {
   const [color, title] =
     c.status === "running"
       ? ["bg-warn animate-pulse", "running"]
-      : c.status === "error"
-        ? ["bg-err", "error"]
-        : c.unread
-          ? ["bg-accent shadow-[0_0_8px] shadow-accent/60", "unread"]
-          : ["bg-transparent", "idle"];
+      : c.status === "waiting"
+        ? ["bg-info", "waiting for rate limit reset"]
+        : c.status === "error"
+          ? ["bg-err", "error"]
+          : c.unread
+            ? ["bg-accent shadow-[0_0_8px] shadow-accent/60", "unread"]
+            : ["bg-transparent", "idle"];
   return <span title={title} className={`inline-block size-1.5 shrink-0 rounded-full ${color} ${className}`} />;
 }
 
@@ -121,7 +123,7 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
         {n}
       </span>
       <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
-      {(c.channel || c.status === "running" || c.status === "error" || c.unread) && (
+      {(c.channel || c.status !== "idle" || c.unread) && (
         <span className="flex shrink-0 items-center group-hover:hidden">
           {c.channel ? <MessageCircle size={14} className="text-muted" /> : <StatusDot c={c} />}
         </span>

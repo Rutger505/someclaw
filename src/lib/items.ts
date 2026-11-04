@@ -1,4 +1,4 @@
-import type { GatewayEvent } from "../../shared/protocol";
+import { RESUME_TEXT, type GatewayEvent } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
@@ -8,12 +8,15 @@ export type Item =
   | { kind: "tools"; tools: Tool[]; live?: boolean }
   | { kind: "meta"; text: string; error?: boolean };
 
+const RESUME_META = "↻ auto-resumed after rate limit reset";
+
 /** Consecutive tool calls collapse into one "tools" item (shown as its latest call, expandable). */
 function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
   const last = items.at(-1);
   switch (e.type) {
     case "user":
-      items.push({ kind: "user", text: String(e.content ?? ""), steer: !!e.steer });
+      if (e.content === RESUME_TEXT) items.push({ kind: "meta", text: RESUME_META });
+      else items.push({ kind: "user", text: String(e.content ?? ""), steer: !!e.steer });
       break;
     case "chunk":
       if (last?.kind === "agent" && last.live) last.text += String(e.content ?? "");
@@ -59,7 +62,7 @@ export function buildItems(s: Snapshot): Item[] {
   };
   s.history.forEach((m, i) => {
     toolsAt(i);
-    if (m.role === "user") items.push({ kind: "user", text: m.content });
+    if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content });
     else if (m.role === "assistant") items.push({ kind: "agent", text: m.content });
     else items.push({ kind: "meta", text: `${m.role}: ${m.content}` });
   });

@@ -1,6 +1,6 @@
 // someclaw's own state (the gateway has no archive/tool history). JSON files in SOMECLAW_STATE_DIR, written atomically.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { ToolLog } from "../shared/protocol";
+import type { Resume, ToolLog } from "../shared/protocol";
 
 const DIR = process.env.SOMECLAW_STATE_DIR ?? `${process.env.HOME}/.local/state/someclaw`;
 mkdirSync(`${DIR}/tools`, { recursive: true, mode: 0o700 });
@@ -28,13 +28,14 @@ export type State = {
   seen: Record<string, string>; // id -> last_activity the user has seen
   titled: Record<string, true>; // auto-title done
   previews: Record<string, string>; // first message of conversations started here
+  resume: Record<string, Resume>; // rate-limited conversations the broker resumes itself
   /** Latest valid gateway token a browser connected with: lets the broker run turns with no browser open.
    * Same trust level as the browser's localStorage; file is 0600. */
   token: string | null;
 };
 
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, previews: {}, token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, previews: {}, resume: {}, token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 

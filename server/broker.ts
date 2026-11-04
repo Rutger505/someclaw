@@ -4,7 +4,9 @@ import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
 import { appendTools, readTools, save, state } from "./state";
 import { generateTitle, TITLE_PREFIX } from "./title";
+import { rateLimitReset } from "./usage";
 import {
+  RESUME_TEXT,
   stripDatePrefix,
   type ClientMsg,
   type ConvStatus,
@@ -59,7 +61,9 @@ function conv(id: string): Conv {
 
 function toConversation(id: string, s: GatewaySession | undefined): Conversation {
   const c = convs.get(id);
-  const status: ConvStatus = c?.status === "running" || runningElsewhere.has(id) ? "running" : (c?.status ?? "idle");
+  const resume = state.resume[id] ?? null;
+  const status: ConvStatus =
+    c?.status === "running" || runningElsewhere.has(id) ? "running" : resume ? "waiting" : (c?.status ?? "idle");
   const now = new Date().toISOString();
   return {
     id,
@@ -74,6 +78,7 @@ function toConversation(id: string, s: GatewaySession | undefined): Conversation
     archived: id in state.archived,
     unread: !!s && status !== "running" && s.last_activity > (state.seen[id] ?? "") && !viewed(id),
     titleError: c?.titleError ?? null,
+    resume: status === "waiting" ? resume : null,
   };
 }
 
@@ -243,12 +248,18 @@ function onEvent(c: Conv, m: GatewayEvent) {
   }
   record(c, m);
   if (m.type === "tool_call" || m.type === "tool_result") c.tools.push(m);
-  if (m.type === "done") finish(c, "idle");
+  if (m.type === "done") {
+    resumeAttempts.delete(c.id);
+    finish(c, "idle");
+  }
   else if (m.type === "aborted") finish(c, "idle", null, true);
   else if (m.type === "error") {
     // raw frame, so rate-limit/quota errors can be matched on later (journalctl --user -u someclaw | grep gateway-error)
     console.error(`broker: gateway-error ${c.id}: ${JSON.stringify(m)}`);
-    finish(c, "error", String(m.message ?? JSON.stringify(m)));
+    const error = String(m.message ?? JSON.stringify(m));
+    finish(c, "error", error).then(() => {
+      if (/rate.?limit/i.test(`${m.code ?? ""} ${error}`)) scheduleResume(c.id);
+    });
   }
 }
 
@@ -302,6 +313,84 @@ async function startTurn(c: Conv, text: string) {
     finish(c, "error", msg(e));
   }
 }
+
+// ---------- auto-resume after rate limits ----------
+// ZeroClaw gives up on a 429 within seconds and drops the reset headers; the reset time comes from the usage
+// endpoint (server/usage.ts). Waits survive restarts (state.resume).
+
+const RESUME_MARGIN_MS = 60_000; // after the reported reset
+const SHORT_LIMIT_MS = 5 * 60_000; // rate-limited but no usage window full: per-minute limits
+const USAGE_FAILED_MS = 15 * 60_000;
+const MAX_RESUME_ATTEMPTS = 20;
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const resumeTimers = new Map<string, Timer>();
+const resumeAttempts = new Map<string, number>();
+
+async function scheduleResume(id: string) {
+  const attempt = (resumeAttempts.get(id) ?? 0) + 1;
+  if (attempt > MAX_RESUME_ATTEMPTS) {
+    console.error(`broker: resume ${id}: still rate-limited after ${MAX_RESUME_ATTEMPTS} attempts, giving up`);
+    resumeAttempts.delete(id);
+    return;
+  }
+  resumeAttempts.set(id, attempt);
+  let at: number;
+  let reason: string;
+  try {
+    const reset = await rateLimitReset();
+    if (reset) {
+      at = Math.max(Date.parse(reset.at), Date.now()) + RESUME_MARGIN_MS;
+      reason = `${reset.window} usage at 100%, resets ${reset.at}`;
+    } else {
+      at = Date.now() + SHORT_LIMIT_MS;
+      reason = "no usage window full (short rate limit): retry in 5 min";
+    }
+  } catch (e) {
+    at = Date.now() + USAGE_FAILED_MS;
+    reason = `reset time unknown (${msg(e)}): retry in 15 min`;
+  }
+  if (convs.get(id)?.status === "running") return; // user started a new turn meanwhile
+  state.resume[id] = { at: new Date(at).toISOString(), reason, attempt };
+  save();
+  console.log(`broker: resume ${id} at ${state.resume[id].at} (attempt ${attempt}): ${reason}`);
+  armResume(id);
+  broadcastList();
+}
+
+function armResume(id: string) {
+  clearTimeout(resumeTimers.get(id));
+  const r = state.resume[id];
+  if (!r) return;
+  const delay = Math.max(0, Date.parse(r.at) - Date.now());
+  resumeTimers.set(
+    id,
+    setTimeout(() => (delay > MAX_TIMER_MS ? armResume(id) : resumeNow(id)), Math.min(delay, MAX_TIMER_MS)),
+  );
+}
+
+function resumeNow(id: string) {
+  resumeTimers.delete(id);
+  if (!state.resume[id]) return;
+  resumeAttempts.set(id, Math.max(resumeAttempts.get(id) ?? 0, state.resume[id].attempt));
+  delete state.resume[id];
+  save();
+  const c = conv(id);
+  if (c.status === "running") return;
+  console.log(`broker: resuming ${id}`);
+  startTurn(c, RESUME_TEXT);
+}
+
+function cancelResume(id: string) {
+  clearTimeout(resumeTimers.get(id));
+  resumeTimers.delete(id);
+  resumeAttempts.delete(id);
+  if (!state.resume[id]) return false;
+  delete state.resume[id];
+  save();
+  return true;
+}
+
+for (const id of Object.keys(state.resume)) armResume(id);
 
 // Failed titles retry after TITLE_RETRY_MS (e.g. titler agent missing until zeroclaw-config is merged), not every poll.
 const TITLE_RETRY_MS = 10 * 60_000;
@@ -375,7 +464,10 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       const c = conv(m.id);
       // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
       for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
-      if (c.status !== "running") return startTurn(c, text);
+      if (c.status !== "running") {
+        cancelResume(m.id); // a new message replaces the pending resume
+        return startTurn(c, text);
+      }
       try {
         const up = await upstream(c);
         record(c, { type: "user", content: text, steer: true });
@@ -387,6 +479,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     }
 
     case "abort":
+      if (cancelResume(m.id)) return broadcastList();
       try {
         await api(ws.data.token, `/api/sessions/${encodeURIComponent(m.id)}/abort`, { method: "POST" });
       } catch (e) {

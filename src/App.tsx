@@ -86,7 +86,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
       case "abort":
         if (help) return setHelp(false);
         if (document.activeElement instanceof HTMLInputElement) return false; // rename field handles its own Esc
-        if (conv?.status !== "running") return false;
+        if (conv?.status !== "running" && conv?.status !== "waiting") return false;
         return send({ type: "abort", id: openId });
       case "sidebar":
         return setSidebar((x) => !x);

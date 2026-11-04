@@ -5,7 +5,15 @@
  * plus `user` for a message the broker sent, so a replayed turn shows it. */
 export type GatewayEvent = { type: string; [k: string]: unknown };
 
-export type ConvStatus = "idle" | "running" | "error";
+/** waiting = rate-limited, the broker resumes the turn itself at `resume.at`. */
+export type ConvStatus = "idle" | "running" | "error" | "waiting";
+
+export type Resume = {
+  at: string;
+  /** What `at` is based on: usage window that is full (e.g. seven_day), or why the fixed interval is used. */
+  reason: string;
+  attempt: number;
+};
 
 export type Conversation = {
   id: string;
@@ -24,6 +32,8 @@ export type Conversation = {
   unread: boolean;
   /** Last auto-title failure (e.g. no titler agent); retried after the next turn. */
   titleError: string | null;
+  /** Set while status is "waiting". */
+  resume: Resume | null;
 };
 
 export type HistoryMessage = { role: "user" | "assistant" | "tool" | string; content: string; created_at: string };
@@ -35,6 +45,7 @@ export type ClientMsg =
   | { type: "subscribe"; id: string | null }
   /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in). */
   | { type: "send"; id: string; text: string }
+  /** Running: stops the turn. Waiting: cancels the auto-resume. */
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "rename"; id: string; name: string };
@@ -49,3 +60,6 @@ export type ServerMsg =
 
 /** The runtime prefixes user messages with the date (gateway: [CURRENT DATE & TIME: ...], channels: [2026-...]); noise in a chat UI. */
 export const stripDatePrefix = (s: string) => s.replace(/^\[(CURRENT DATE & TIME: [^\]]*|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [^\]]*)\]\s*/, "");
+
+/** Sent by the broker to resume a rate-limited turn (the failed message is already in the history). */
+export const RESUME_TEXT = "[someclaw] Rate limit reset: continue where you left off.";
