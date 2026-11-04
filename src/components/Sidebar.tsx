@@ -112,7 +112,7 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
     <div
       onClick={() => onOpen(c.id)}
       title={c.error ?? c.titleError ?? undefined}
-      className={`group relative flex h-9 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors ${
+      className={`group relative flex h-9 cursor-pointer items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
         open ? "bg-elevated text-fg" : "text-fg-2 hover:bg-elevated/60 hover:text-fg"
       }`}
     >
@@ -120,8 +120,10 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
       <span className="w-2.5 shrink-0 text-right font-mono text-[11px] text-faint" title={n !== null ? `Ctrl+${n}` : undefined}>
         {n}
       </span>
-      {c.channel ? <MessageCircle size={14} className="shrink-0 text-muted" /> : <StatusDot c={c} className="mx-[3px]" />}
       <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
+      <span className="-mr-1 grid size-6 shrink-0 place-items-center group-hover:hidden">
+        {c.channel ? <MessageCircle size={14} className="text-muted" /> : <StatusDot c={c} />}
+      </span>
       <button
         onClick={(e) => {
           e.stopPropagation();
