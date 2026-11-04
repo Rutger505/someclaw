@@ -153,7 +153,7 @@ function Help({ onClose }: { onClose: () => void }) {
             </div>
           ))}
         </div>
-        <p className="mt-4 text-xs leading-relaxed text-muted">Hold Ctrl to see the numbers in the sidebar. Ctrl+1-9 only reach the page in an app window (Chromium --app / Omarchy web app); browser tabs keep them.</p>
+        <p className="mt-4 text-xs leading-relaxed text-muted">Numbers in the sidebar are the Ctrl+1-9 targets. Those only reach the page in an app window (Chromium --app / Omarchy web app); browser tabs keep them.</p>
       </div>
     </div>
   );

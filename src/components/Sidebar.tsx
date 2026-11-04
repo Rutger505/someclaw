@@ -1,5 +1,5 @@
 import { Archive, ArchiveRestore, ChevronRight, ExternalLink, Keyboard, MessageCircle, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Conversation } from "../../shared/protocol";
 import { DASHBOARD_URL } from "../App";
 import type { Link } from "../lib/broker";
@@ -32,7 +32,6 @@ type Props = {
 
 export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchive, onHelp }: Props) {
   const [showArchived, setShowArchived] = useState(false);
-  const showKeys = useCtrlHeld();
   const active = list?.filter((c) => !c.archived) ?? [];
   const archived = list?.filter((c) => c.archived) ?? [];
 
@@ -66,7 +65,7 @@ export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchiv
         {list === null && !listError && <p className="px-2.5 py-1.5 text-sm text-muted">Loading…</p>}
         <div className="flex flex-col gap-0.5">
           {active.map((c, i) => (
-            <Row key={c.id} c={c} n={showKeys && i < 9 ? i + 1 : null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />
+            <Row key={c.id} c={c} n={i < 9 ? i + 1 : null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />
           ))}
         </div>
         {archived.length > 0 && (
@@ -118,6 +117,9 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
       }`}
     >
       {open && <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent" />}
+      <span className="w-2.5 shrink-0 text-right font-mono text-[11px] text-faint" title={n !== null ? `Ctrl+${n}` : undefined}>
+        {n}
+      </span>
       {c.channel ? <MessageCircle size={14} className="shrink-0 text-muted" /> : <StatusDot c={c} className="mx-[3px]" />}
       <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
       <button
@@ -125,28 +127,13 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
           e.stopPropagation();
           onArchive(c.id, !c.archived);
         }}
-        title={c.archived ? "Unarchive (Alt+A)" : "Archive (Alt+A)"}
+        title={c.archived ? "Unarchive (Ctrl+Shift+E)" : "Archive (Ctrl+Shift+E)"}
         className="-mr-1 hidden size-6 place-items-center rounded text-muted group-hover:grid hover:bg-line-strong hover:text-fg"
       >
         {c.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
       </button>
-      {n !== null && <Kbd className="group-hover:hidden">{n}</Kbd>}
     </div>
   );
-}
-
-/** Ctrl+1-9 hints only while Ctrl is held: a quiet list otherwise. */
-function useCtrlHeld() {
-  const [held, setHeld] = useState(false);
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => setHeld(e.key === "Control" ? e.type === "keydown" : e.ctrlKey);
-    const off = () => setHeld(false);
-    addEventListener("keydown", on);
-    addEventListener("keyup", on);
-    addEventListener("blur", off);
-    return () => (removeEventListener("keydown", on), removeEventListener("keyup", on), removeEventListener("blur", off));
-  }, []);
-  return held;
 }
 
 export function Kbd({ children, className = "" }: { children: React.ReactNode; className?: string }) {

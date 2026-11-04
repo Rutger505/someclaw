@@ -17,16 +17,16 @@ export type Action =
 type Binding = { action: Action; keys: string; label: string; match: (e: KeyboardEvent) => boolean };
 
 const ctrl = (e: KeyboardEvent) => (e.ctrlKey || e.metaKey) && !e.altKey;
-const alt = (e: KeyboardEvent) => e.altKey && !e.ctrlKey && !e.metaKey;
+const bare = (e: KeyboardEvent) => !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
 
 export const KEYMAP: Binding[] = [
   { action: "open-n", keys: "Ctrl+1…9", label: "Open conversation 1-9", match: (e) => ctrl(e) && !e.shiftKey && /^Digit[1-9]$/.test(e.code) },
   { action: "new", keys: "Ctrl+O", label: "New conversation", match: (e) => ctrl(e) && !e.shiftKey && e.code === "KeyO" },
-  { action: "next", keys: "Alt+↓", label: "Next conversation", match: (e) => alt(e) && e.key === "ArrowDown" },
-  { action: "prev", keys: "Alt+↑", label: "Previous conversation", match: (e) => alt(e) && e.key === "ArrowUp" },
-  { action: "archive", keys: "Alt+A", label: "Archive / unarchive conversation", match: (e) => alt(e) && e.code === "KeyA" },
-  { action: "rename", keys: "Alt+R", label: "Rename conversation", match: (e) => alt(e) && e.code === "KeyR" },
-  { action: "abort", keys: "Esc", label: "Stop the running turn", match: (e) => e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey },
+  { action: "next", keys: "Ctrl+↓", label: "Next conversation", match: (e) => ctrl(e) && !e.shiftKey && e.key === "ArrowDown" },
+  { action: "prev", keys: "Ctrl+↑", label: "Previous conversation", match: (e) => ctrl(e) && !e.shiftKey && e.key === "ArrowUp" },
+  { action: "archive", keys: "Ctrl+Shift+E", label: "Archive / unarchive conversation", match: (e) => ctrl(e) && e.shiftKey && e.code === "KeyE" },
+  { action: "rename", keys: "F2", label: "Rename conversation", match: (e) => bare(e) && e.key === "F2" },
+  { action: "abort", keys: "Esc", label: "Stop the running turn", match: (e) => bare(e) && e.key === "Escape" },
   { action: "sidebar", keys: "Ctrl+B", label: "Toggle sidebar", match: (e) => ctrl(e) && !e.shiftKey && e.code === "KeyB" },
   { action: "focus", keys: "Ctrl+L", label: "Focus message input", match: (e) => ctrl(e) && !e.shiftKey && e.code === "KeyL" },
   { action: "help", keys: "Ctrl+/", label: "Shortcuts", match: (e) => ctrl(e) && e.key === "/" },

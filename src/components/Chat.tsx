@@ -93,7 +93,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             <span
               className="truncate text-sm font-medium"
               onDoubleClick={() => conv && !readOnly && setRenaming(conv.name ?? "")}
-              title={conv ? "Double-click or Alt+R to rename" : undefined}
+              title={conv ? "Double-click or F2 to rename" : undefined}
             >
               {conv ? convTitle(conv) : <span className="text-muted">New conversation</span>}
             </span>
@@ -101,7 +101,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           </div>
         )}
         {conv && (
-          <IconButton onClick={() => send({ type: "archive", id, archived: !conv.archived })} title={conv.archived ? "Unarchive (Alt+A)" : "Archive (Alt+A)"}>
+          <IconButton onClick={() => send({ type: "archive", id, archived: !conv.archived })} title={conv.archived ? "Unarchive (Ctrl+Shift+E)" : "Archive (Ctrl+Shift+E)"}>
             {conv.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}
           </IconButton>
         )}

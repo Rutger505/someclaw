@@ -46,7 +46,7 @@ Open the URL, enter a pairing code (`zeroclaw gateway get-paircode --new`). Its 
 
 ## Shortcuts
 
-Ctrl+1-9 open conversation 1-9 (sidebar order: newest created first, stable), Ctrl+O new, Alt+↑/↓ previous/next, Alt+A archive, Alt+R rename, Esc stop, Ctrl+B sidebar, Ctrl+L focus input, Ctrl+/ help. In the input: Enter send (steers while rocky works). Hold Ctrl to see the sidebar numbers. Browser tabs keep Ctrl+1-9: use an app window (Chromium `--app`, Omarchy web app).
+Ctrl+1-9 open conversation 1-9 (sidebar order: newest created first, stable), Ctrl+O new, Ctrl+↑/↓ previous/next, Ctrl+Shift+E archive, F2 rename, Esc stop, Ctrl+B sidebar, Ctrl+L focus input, Ctrl+/ help. In the input: Enter send (steers while rocky works). The sidebar shows each number before the title. Browser tabs keep Ctrl+1-9: use an app window (Chromium `--app`, Omarchy web app).
 
 ## Not done
 
