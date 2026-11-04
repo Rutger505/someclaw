@@ -245,7 +245,11 @@ function onEvent(c: Conv, m: GatewayEvent) {
   if (m.type === "tool_call" || m.type === "tool_result") c.tools.push(m);
   if (m.type === "done") finish(c, "idle");
   else if (m.type === "aborted") finish(c, "idle", null, true);
-  else if (m.type === "error") finish(c, "error", String(m.message ?? JSON.stringify(m)));
+  else if (m.type === "error") {
+    // raw frame, so rate-limit/quota errors can be matched on later (journalctl --user -u someclaw | grep gateway-error)
+    console.error(`broker: gateway-error ${c.id}: ${JSON.stringify(m)}`);
+    finish(c, "error", String(m.message ?? JSON.stringify(m)));
+  }
 }
 
 async function finish(c: Conv, status: ConvStatus, error: string | null = null, aborted = false) {
