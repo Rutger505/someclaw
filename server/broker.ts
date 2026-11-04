@@ -7,8 +7,11 @@ import { generateTitle, TITLE_PREFIX } from "./title";
 import { rateLimitReset } from "./usage";
 import {
   RESUME_TEXT,
+  forkPrompt,
+  parseFork,
   stripDatePrefix,
   type ClientMsg,
+  type ForkRef,
   type ConvStatus,
   type Conversation,
   type GatewayEvent,
@@ -16,7 +19,7 @@ import {
   type ServerMsg,
 } from "../shared/protocol";
 
-export type Client = { token: string; sub: string | null };
+export type Client = { token: string; sub: string | null; ua: string };
 
 type Conv = {
   id: string;
@@ -121,6 +124,7 @@ function refresh() {
       sessions = all.sessions.filter((s) => s.agent_alias === AGENT && !s.session_id.startsWith(TITLE_PREFIX));
       runningElsewhere = new Set(running.sessions.map((s) => s.session_id).filter((id) => convs.get(id)?.status !== "running"));
       for (const s of sessions) {
+        forgetIfRecreated(s);
         // First sighting counts as seen: only activity after that is unread.
         if (!(s.session_id in state.seen) || viewed(s.session_id)) markSeen(s.session_id);
       }
@@ -137,6 +141,21 @@ function refresh() {
   })());
 }
 setInterval(() => clients.size && refresh(), POLL_MS);
+
+function forgetIfRecreated(s: GatewaySession) {
+  const id = s.session_id;
+  const known = state.created[id];
+  if (known === s.created_at) return;
+  if (known) {
+    console.log(`broker: ${id} recreated (created ${known} -> ${s.created_at}): dropping its archive, title and preview state`);
+    delete state.archived[id];
+    delete state.titled[id];
+    delete state.channelTitles[id];
+    delete state.previews[id];
+  }
+  state.created[id] = s.created_at;
+  save();
+}
 
 // Unnamed sessions started elsewhere (or before someclaw kept previews): first user message as the preview.
 const previewing = new Set<string>();
@@ -172,7 +191,11 @@ function unauthorized() {
 async function history(id: string): Promise<HistoryMessage[]> {
   if (!state.token) throw new Error("no gateway token");
   const res = await api<{ messages: HistoryMessage[] }>(state.token, `/api/sessions/${encodeURIComponent(id)}/messages`);
-  return res.messages.map((m) => (m.role === "user" ? { ...m, content: stripDatePrefix(m.content) } : m));
+  return res.messages.map((m) => {
+    if (m.role !== "user") return m;
+    const { text, fork } = parseFork(stripDatePrefix(m.content));
+    return fork ? { ...m, content: text, fork } : { ...m, content: text };
+  });
 }
 
 async function snapshot(id: string): Promise<ServerMsg> {
@@ -296,18 +319,19 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   closeWhenIdle(c);
 }
 
-async function startTurn(c: Conv, text: string) {
+/** `fork`: first turn of a conversation continuing a channel session; `context` is that session's transcript. */
+async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: string }) {
   c.status = "running";
   c.error = null;
   c.turn = [];
   c.tools = [];
   if (!session(c.id)?.message_count) state.previews[c.id] ??= text.slice(0, 200);
   save();
-  record(c, { type: "user", content: text });
+  record(c, fork ? { type: "user", content: text, fork: fork.ref } : { type: "user", content: text });
   broadcastList();
   try {
     const up = await upstream(c);
-    up.send(JSON.stringify({ type: "message", content: text }));
+    up.send(JSON.stringify({ type: "message", content: fork ? forkPrompt(fork.ref, fork.context, text) : text }));
   } catch (e) {
     record(c, { type: "error", message: msg(e) });
     finish(c, "error", msg(e));
@@ -402,9 +426,8 @@ function backfillTitles() {
   const next = sessions.find(
     (s) =>
       s.message_count >= 2 &&
-      !s.name &&
-      !s.channel_id &&
       !state.titled[s.session_id] &&
+      (s.channel_id ? channelNeedsTitle(s) : !s.name) &&
       convs.get(s.session_id)?.status !== "running" &&
       !runningElsewhere.has(s.session_id) &&
       Date.now() - (titleFailedAt.get(s.session_id) ?? 0) > TITLE_RETRY_MS,
@@ -418,14 +441,25 @@ function backfillTitles() {
     });
 }
 
+// Channel sessions: one thread per contact, so the title follows the latest topic. Retitled once activity settled.
+// Kept: renamed here (titled) or in the official dashboard after our last title. A name from before we tracked it is replaced.
+const CHANNEL_SETTLE_MS = 2 * 60_000;
+function channelNeedsTitle(s: GatewaySession) {
+  const t = state.channelTitles[s.session_id];
+  if (t && s.name && s.name !== t.name) return false;
+  return t?.at !== s.last_activity && Date.now() - Date.parse(s.last_activity.replace(/(\.\d{3})\d+/, "$1")) > CHANNEL_SETTLE_MS;
+}
+
 async function autoTitle(c: Conv, h: HistoryMessage[]) {
   const s = session(c.id);
-  if (state.titled[c.id] || s?.name || s?.channel_id || titling.has(c.id) || !state.token) return;
+  const channel = !!s?.channel_id;
+  if (state.titled[c.id] || (s?.name && !channel) || (channel && !channelNeedsTitle(s!)) || titling.has(c.id) || !state.token) return;
   titling.add(c.id);
   try {
-    const name = await generateTitle(state.token, c.id, h);
+    const name = await generateTitle(state.token, c.id, h, channel);
     await api(state.token, `/api/sessions/${encodeURIComponent(c.id)}`, { method: "PUT", body: JSON.stringify({ name }) });
-    state.titled[c.id] = true;
+    if (channel) state.channelTitles[c.id] = { at: s!.last_activity, name };
+    else state.titled[c.id] = true;
     c.titleError = null;
     save();
   } catch (e) {
@@ -438,11 +472,31 @@ async function autoTitle(c: Conv, h: HistoryMessage[]) {
   }
 }
 
+// ---------- forks ----------
+
+// Context for a fork: the channel thread's latest messages, oldest dropped first to stay under the caps.
+const FORK_MAX_MESSAGES = 60;
+const FORK_MAX_CHARS = 40_000;
+const FORK_MAX_MESSAGE_CHARS = 4_000;
+
+function transcript(h: HistoryMessage[]) {
+  const lines: string[] = [];
+  let chars = 0;
+  for (const m of h.filter((m) => m.role === "user" || m.role === "assistant").reverse()) {
+    const content = m.content.length > FORK_MAX_MESSAGE_CHARS ? `${m.content.slice(0, FORK_MAX_MESSAGE_CHARS)} [...]` : m.content;
+    const line = `${m.role === "user" ? "User" : "Assistant"} (${m.created_at}): ${content}`;
+    if (lines.length >= FORK_MAX_MESSAGES || chars + line.length > FORK_MAX_CHARS) break;
+    lines.unshift(line);
+    chars += line.length;
+  }
+  return { text: lines.join("\n\n"), messages: lines.length };
+}
+
 // ---------- browser messages ----------
 
 function readOnly(id: string) {
   const ch = session(id)?.channel_id;
-  return ch ? `${ch} conversation: read-only here, /ws/chat can't write into channel sessions` : null;
+  return ch ? `${ch} conversation: read-only here (/ws/chat can't write into channel sessions); send it as a fork instead` : null;
 }
 
 async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
@@ -478,6 +532,16 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       return broadcastList();
     }
 
+    case "fork": {
+      const text = m.text.trim();
+      if (!text) return;
+      const src = session(m.from);
+      if (!src?.channel_id) return fail(`fork: ${m.from} is not a channel conversation`);
+      if (session(m.id) || convs.get(m.id)?.status === "running") return fail(`fork: conversation ${m.id} already exists`);
+      const context = transcript(await history(m.from));
+      return startTurn(conv(m.id), text, { ref: { id: m.from, channel: src.channel_id, messages: context.messages }, context: context.text });
+    }
+
     case "abort":
       if (cancelResume(m.id)) return broadcastList();
       try {
@@ -488,6 +552,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       return;
 
     case "archive":
+      console.log(`broker: ${m.archived ? "archive" : "unarchive"} ${m.id} (${ws.data.ua})`);
       if (m.archived) state.archived[m.id] = new Date().toISOString();
       else delete state.archived[m.id];
       save();

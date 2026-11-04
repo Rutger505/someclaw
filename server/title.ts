@@ -26,15 +26,20 @@ export function clean(raw: string) {
   return line.replace(/^(title:\s*)/i, "").replace(/^["'`*#\s]+|["'`*.\s]+$/g, "").slice(0, 60);
 }
 
-export async function generateTitle(token: string, id: string, history: HistoryMessage[]) {
-  const user = history.find((m) => m.role === "user");
-  const reply = history.find((m) => m.role === "assistant");
-  if (!user) throw new Error("title: no user message yet");
+/** Web chats: titled by their first exchange. Channel sessions (`recent`): one endless thread, titled by its latest messages. */
+export async function generateTitle(token: string, id: string, history: HistoryMessage[], recent = false) {
+  const chat = history.filter((m) => m.role === "user" || m.role === "assistant");
+  const picked = recent
+    ? chat.slice(-6)
+    : [chat.find((m) => m.role === "user"), chat.find((m) => m.role === "assistant")].filter((m) => !!m);
+  if (!picked.some((m) => m.role === "user")) throw new Error("title: no user message yet");
+  const max = recent ? 600 : 1500;
   const prompt = [
-    "Write a title for this chat: 2-6 words, same language as the user, no quotes, no trailing punctuation. Reply with only the title.",
+    recent
+      ? "Write a title for what this chat is currently about (latest messages below): 2-6 words, same language as the user, no quotes, no trailing punctuation. Reply with only the title."
+      : "Write a title for this chat: 2-6 words, same language as the user, no quotes, no trailing punctuation. Reply with only the title.",
     "",
-    `User: ${stripDatePrefix(user.content).slice(0, 1500)}`,
-    reply ? `Assistant: ${reply.content.slice(0, 1500)}` : "",
+    ...picked.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${(m.role === "user" ? stripDatePrefix(m.content) : m.content).slice(0, max)}`),
   ].join("\n");
   const session = TITLE_PREFIX + id;
   try {

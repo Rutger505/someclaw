@@ -1,9 +1,9 @@
-import { RESUME_TEXT, type GatewayEvent } from "../../shared/protocol";
+import { RESUME_TEXT, type ForkRef, type GatewayEvent } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
 export type Item =
-  | { kind: "user"; text: string; steer?: boolean }
+  | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef }
   | { kind: "agent"; text: string; live?: boolean }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
   | { kind: "meta"; text: string; error?: boolean };
@@ -16,7 +16,7 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
   switch (e.type) {
     case "user":
       if (e.content === RESUME_TEXT) items.push({ kind: "meta", text: RESUME_META });
-      else items.push({ kind: "user", text: String(e.content ?? ""), steer: !!e.steer });
+      else items.push({ kind: "user", text: String(e.content ?? ""), steer: !!e.steer, fork: e.fork as ForkRef | undefined });
       break;
     case "chunk":
       if (last?.kind === "agent" && last.live) last.text += String(e.content ?? "");
@@ -62,7 +62,7 @@ export function buildItems(s: Snapshot): Item[] {
   };
   s.history.forEach((m, i) => {
     toolsAt(i);
-    if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content });
+    if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork });
     else if (m.role === "assistant") items.push({ kind: "agent", text: m.content });
     else items.push({ kind: "meta", text: `${m.role}: ${m.content}` });
   });

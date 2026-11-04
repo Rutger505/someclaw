@@ -40,7 +40,7 @@ Bun.serve<Client, never>({
     if (url.pathname === "/someclaw/ws") {
       const token = url.searchParams.get("token");
       if (!(await authorize(token))) return new Response("unauthorized: pair again", { status: 401 });
-      if (server.upgrade(req, { data: { token: token!, sub: null } })) return;
+      if (server.upgrade(req, { data: { token: token!, sub: null, ua: req.headers.get("user-agent") ?? "?" } })) return;
       return new Response("expected websocket", { status: 400 });
     }
 

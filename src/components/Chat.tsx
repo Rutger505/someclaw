@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, CircleAlert, Clock, CornerDownRight, PanelLeft, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CircleAlert, Clock, CornerDownRight, GitBranch, PanelLeft, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ClientMsg, Conversation, Resume } from "../../shared/protocol";
 import type { Snapshot } from "../lib/broker";
@@ -16,12 +16,14 @@ type Props = {
   send: (m: ClientMsg) => void;
   onDraft: (empty: boolean) => void;
   onToggleSidebar: () => void;
+  /** Opens another conversation (a fork right after sending it). */
+  onOpen: (id: string) => void;
 };
 
 /** One content width for messages and composer, so their edges line up. */
 const COLUMN = "mx-auto w-full max-w-3xl px-6";
 
-export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar }, ref) {
+export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar, onOpen }, ref) {
   const [draft, setDraft] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -53,13 +55,16 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     if (stick.current && log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [items]);
 
-  /** Idle: starts a turn. While rocky works: steers it (no queue). */
+  /** Idle: starts a turn. While rocky works: steers it (no queue). Channel sessions: forks into a new conversation. */
   const submit = () => {
     const text = draft.trim();
-    if (!text || readOnly) return;
+    if (!text) return;
     setDraft("");
     stick.current = true;
-    send({ type: "send", id, text });
+    if (!readOnly) return send({ type: "send", id, text });
+    const fork = crypto.randomUUID();
+    send({ type: "fork", from: id, id: fork, text });
+    onOpen(fork);
   };
 
   return (
@@ -142,7 +147,6 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             autoFocus
             rows={1}
             value={draft}
-            disabled={readOnly}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -150,11 +154,17 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                 submit();
               }
             }}
-            placeholder={readOnly ? `${conv?.channel} conversations are read-only here` : running ? "Steer rocky…" : "Message rocky…"}
+            placeholder={readOnly ? "Continue in a new someclaw conversation…" : running ? "Steer rocky…" : "Message rocky…"}
             className="field-sizing-content block max-h-64 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none placeholder:text-faint disabled:opacity-50"
           />
           <div className="flex items-center gap-2 px-3 pb-2.5">
-            <span className="text-xs text-faint">{running ? "rocky is working · Enter steers · Esc stops" : "Enter to send · Shift+Enter new line"}</span>
+            <span className="text-xs text-faint">
+              {readOnly
+                ? `${conv?.channel} is read-only here · Enter continues in a new conversation with this thread as context`
+                : running
+                  ? "rocky is working · Enter steers · Esc stops"
+                  : "Enter to send · Shift+Enter new line"}
+            </span>
             <div className="ml-auto flex items-center gap-1.5">
               {running && (
                 <button
@@ -167,11 +177,11 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                 </button>
               )}
               <button
-                title={running ? "Steer (Enter)" : "Send (Enter)"}
-                disabled={!draft.trim() || readOnly}
+                title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : "Send (Enter)"}
+                disabled={!draft.trim()}
                 className="grid size-8 place-items-center rounded-full bg-accent text-base transition-colors hover:bg-accent-light disabled:bg-elevated disabled:text-faint"
               >
-                {running ? <CornerDownRight size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
+                {readOnly ? <GitBranch size={16} strokeWidth={2.5} /> : running ? <CornerDownRight size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
               </button>
             </div>
           </div>
@@ -190,6 +200,11 @@ function Row({ item }: { item: Item }) {
             <span className="flex items-center gap-1 text-xs text-accent">
               <CornerDownRight size={12} /> steered
             </span>
+          )}
+          {item.fork && (
+            <a href={`#${encodeURIComponent(item.fork.id)}`} className="flex items-center gap-1 text-xs text-accent hover:underline">
+              <GitBranch size={12} /> continued from {item.fork.channel} · {item.fork.messages} messages as context
+            </a>
           )}
           <div className="max-w-full rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap wrap-anywhere ring-1 ring-line">{item.text}</div>
         </div>

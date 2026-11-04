@@ -117,7 +117,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
           />
         </div>
       )}
-      <Chat ref={chat} id={openId} conv={conv} snap={snap} send={send} onDraft={setDraftEmpty} onToggleSidebar={() => setSidebar((x) => !x)} />
+      <Chat ref={chat} id={openId} conv={conv} snap={snap} send={send} onDraft={setDraftEmpty} onToggleSidebar={() => setSidebar((x) => !x)} onOpen={open} />
 
       {errors.length > 0 && (
         <div className="absolute top-4 right-4 z-30 flex w-96 max-w-[calc(100%-2rem)] flex-col gap-2">

@@ -36,7 +36,16 @@ export type Conversation = {
   resume: Resume | null;
 };
 
-export type HistoryMessage = { role: "user" | "assistant" | "tool" | string; content: string; created_at: string };
+/** A conversation continued from a read-only channel session: its first message carries that thread as context. */
+export type ForkRef = { id: string; channel: string; messages: number };
+
+export type HistoryMessage = {
+  role: "user" | "assistant" | "tool" | string;
+  content: string;
+  created_at: string;
+  /** User message that continued a channel session (content is then only what the user typed). */
+  fork?: ForkRef;
+};
 
 /** Tool events of a finished turn, shown before history[at] (its assistant reply). Gateway /ws/chat history has no tools. */
 export type ToolLog = { at: number; events: GatewayEvent[] };
@@ -45,6 +54,8 @@ export type ClientMsg =
   | { type: "subscribe"; id: string | null }
   /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in). */
   | { type: "send"; id: string; text: string }
+  /** Continue read-only channel session `from` in new conversation `id`: `text` plus that thread as context. */
+  | { type: "fork"; from: string; id: string; text: string }
   /** Running: stops the turn. Waiting: cancels the auto-resume. */
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
@@ -63,3 +74,19 @@ export const stripDatePrefix = (s: string) => s.replace(/^\[(CURRENT DATE & TIME
 
 /** Sent by the broker to resume a rate-limited turn (the failed message is already in the history). */
 export const RESUME_TEXT = "[someclaw] Rate limit reset: continue where you left off.";
+
+// Fork context block, first thing in the forked conversation's first message. The model reads it; the UI hides it.
+const FORK_OPEN = (r: ForkRef) => `<continued-from id="${r.id}" channel="${r.channel}" messages="${r.messages}">`;
+const FORK_CLOSE = "</continued-from>";
+const FORK_RE = /^<continued-from id="([^"]*)" channel="([^"]*)" messages="(\d+)">[\s\S]*?<\/continued-from>\n\n/;
+
+export function forkPrompt(ref: ForkRef, transcript: string, text: string) {
+  const intro = `Earlier conversation from the ${ref.channel} channel. The user continues it here, in a web chat: your replies go to this chat, not to ${ref.channel}.`;
+  return `${FORK_OPEN(ref)}\n${intro}\n\n${transcript.replaceAll(FORK_CLOSE, "")}\n${FORK_CLOSE}\n\n${text}`;
+}
+
+export function parseFork(content: string): { text: string; fork?: ForkRef } {
+  const m = FORK_RE.exec(content);
+  if (!m) return { text: content };
+  return { text: content.slice(m[0].length), fork: { id: m[1]!, channel: m[2]!, messages: Number(m[3]) } };
+}

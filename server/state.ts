@@ -26,16 +26,21 @@ function write(file: string, data: string) {
 export type State = {
   archived: Record<string, string>; // id -> archived at
   seen: Record<string, string>; // id -> last_activity the user has seen
-  titled: Record<string, true>; // auto-title done
+  titled: Record<string, true>; // auto-title done, or renamed by hand: never auto-titled again
+  /** Channel sessions are one long thread per contact: retitled on new activity. id -> last_activity + name at titling. */
+  channelTitles: Record<string, { at: string; name: string }>;
   previews: Record<string, string>; // first message of conversations started here
   resume: Record<string, Resume>; // rate-limited conversations the broker resumes itself
+  /** Session created_at at first sighting. Channel session ids are fixed per contact and come back after a delete:
+   * a changed created_at means a new conversation, so its archive/title/preview state is dropped. */
+  created: Record<string, string>;
   /** Latest valid gateway token a browser connected with: lets the broker run turns with no browser open.
    * Same trust level as the browser's localStorage; file is 0600. */
   token: string | null;
 };
 
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, previews: {}, resume: {}, token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 
