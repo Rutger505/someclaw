@@ -6,6 +6,7 @@ import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
 import { convTitle, IconButton, Kbd, StatusDot } from "./Sidebar";
 import { ToolGroup } from "./Tools";
+import { ModelSelector } from "./ModelSelector";
 
 /** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
 export type ChatHandle = { focus: () => void; rename: () => void; unlock: () => boolean };
@@ -84,7 +85,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3">
+      <header className="relative flex h-14 shrink-0 items-center gap-2 border-b border-line px-3">
         <IconButton onClick={onToggleSidebar} title="Sidebar (Ctrl+B)">
           <PanelLeft size={18} />
         </IconButton>
@@ -120,6 +121,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             {conv?.channel && <span className="rounded-md bg-elevated px-1.5 py-0.5 text-xs text-fg-2">{conv.channel} · read-only</span>}
           </div>
         )}
+        {!readOnly && <ModelSelector />}
         {conv && (
           <IconButton onClick={() => send({ type: "archive", id, archived: !conv.archived })} title={conv.archived ? "Unarchive (Ctrl+Shift+E)" : "Archive (Ctrl+Shift+E)"}>
             {conv.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}
