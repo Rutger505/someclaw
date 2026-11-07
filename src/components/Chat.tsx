@@ -85,7 +85,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="relative flex h-14 shrink-0 items-center gap-2 border-b border-line px-3">
         <IconButton onClick={onToggleSidebar} title="Sidebar (Ctrl+B)">
           <PanelLeft size={18} />
@@ -122,7 +122,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             {conv?.channel && <span className="rounded-md bg-elevated px-1.5 py-0.5 text-xs text-fg-2">{conv.channel} · read-only</span>}
           </div>
         )}
-        {!readOnly && <ModelSelector />}
+        {!readOnly && <ModelSelector value={snap?.id === id ? snap.model : null} onChange={(ref) => send({ type: "model", id, ref })} />}
         {conv && (
           <IconButton onClick={() => send({ type: "archive", id, archived: !conv.archived })} title={conv.archived ? "Unarchive (Ctrl+Shift+E)" : "Archive (Ctrl+Shift+E)"}>
             {conv.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}
@@ -275,7 +275,12 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
         <div className="group max-w-full">
           <Markdown text={item.text} />
           {item.live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-accent align-middle" />}
-          {!item.live && <Actions text={item.text} reset={reset} />}
+          {!item.live && (
+            <div className="flex items-center gap-2">
+              <Actions text={item.text} reset={reset} />
+              {item.model && <span className="ml-auto truncate font-mono text-[11px] text-faint" title="Model that wrote this reply">{item.model}</span>}
+            </div>
+          )}
         </div>
       );
     case "tools":

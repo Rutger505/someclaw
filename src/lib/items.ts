@@ -5,7 +5,8 @@ export type Tool = { id: string; name: string; args: unknown; output?: string };
 export type Item =
   /** at: index in the persisted history (reset to here); absent for the running turn. */
   | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef; at?: number }
-  | { kind: "agent"; text: string; live?: boolean; at?: number }
+  /** model: what answered it (provider ref · model), when known (turns finished in someclaw since this was added). */
+  | { kind: "agent"; text: string; live?: boolean; at?: number; model?: string }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
   | { kind: "meta"; text: string; error?: boolean };
 
@@ -64,7 +65,10 @@ export function buildItems(s: Snapshot): Item[] {
   s.history.forEach((m, i) => {
     toolsAt(i);
     if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork, at: i });
-    else if (m.role === "assistant") items.push({ kind: "agent", text: m.content, at: i });
+    else if (m.role === "assistant") {
+      const t = s.turns.find((t) => t.at === i);
+      items.push({ kind: "agent", text: m.content, at: i, model: t ? `${t.provider} · ${t.model}` : undefined });
+    }
     else items.push({ kind: "meta", text: `${m.role}: ${m.content}` });
   });
   for (const log of s.tools) if (log.at >= s.history.length) for (const e of log.events) addEvent(items, e, false);

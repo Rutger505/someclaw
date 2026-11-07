@@ -1,9 +1,10 @@
 // someclaw's own state (the gateway has no archive/tool history). JSON files in SOMECLAW_STATE_DIR, written atomically.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { Resume, ToolLog } from "../shared/protocol";
+import type { Resume, ToolLog, TurnModel } from "../shared/protocol";
 
 const DIR = process.env.SOMECLAW_STATE_DIR ?? `${process.env.HOME}/.local/state/someclaw`;
 mkdirSync(`${DIR}/tools`, { recursive: true, mode: 0o700 });
+mkdirSync(`${DIR}/turns`, { recursive: true, mode: 0o700 });
 
 function read<T>(file: string, fallback: T): T {
   try {
@@ -34,13 +35,15 @@ export type State = {
   /** Session created_at at first sighting. Channel session ids are fixed per contact and come back after a delete:
    * a changed created_at means a new conversation, so its archive/title/preview state is dropped. */
   created: Record<string, string>;
+  /** Per-conversation model: provider ref (e.g. anthropic.opus) passed to /ws/chat. Absent = rocky's configured default. */
+  models: Record<string, string>;
   /** Latest valid gateway token a browser connected with: lets the broker run turns with no browser open.
    * Same trust level as the browser's localStorage; file is 0600. */
   token: string | null;
 };
 
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, models: {}, token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 
@@ -62,4 +65,16 @@ export function truncateTools(id: string, keep: number) {
 export function appendTools(id: string, log: ToolLog) {
   if (!log.events.length) return;
   write(toolFile(id), JSON.stringify([...readTools(id), log]));
+}
+
+// Model of each finished turn, from its done frame (gateway history doesn't keep it). at: history index of the reply.
+const turnFile = (id: string) => `${DIR}/turns/${encodeURIComponent(id)}.json`;
+export const readTurns = (id: string): TurnModel[] => read(turnFile(id), []);
+export function appendTurn(id: string, t: TurnModel) {
+  write(turnFile(id), JSON.stringify([...readTurns(id).filter((x) => x.at !== t.at), t]));
+}
+export function truncateTurns(id: string, keep: number) {
+  const turns = readTurns(id);
+  const kept = turns.filter((t) => t.at < keep);
+  if (kept.length !== turns.length) write(turnFile(id), JSON.stringify(kept));
 }

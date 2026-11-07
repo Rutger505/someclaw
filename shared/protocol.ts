@@ -50,6 +50,12 @@ export type HistoryMessage = {
 /** Tool events of a finished turn, shown before history[at] (its assistant reply). Gateway /ws/chat history has no tools. */
 export type ToolLog = { at: number; events: GatewayEvent[] };
 
+/** Model that answered history[at], from the turn's done frame. provider: serving provider ref (e.g. anthropic.opus). */
+export type TurnModel = { at: number; provider: string; model: string };
+
+/** A configured provider profile (providers.models.<family>.<alias>). ref = "<family>.<alias>". */
+export type ModelOption = { ref: string; family: string; alias: string; model: string };
+
 export type ClientMsg =
   | { type: "subscribe"; id: string | null }
   /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in). */
@@ -60,13 +66,17 @@ export type ClientMsg =
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "rename"; id: string; name: string }
+  /** Model for this conversation's next turns; null = rocky's default. */
+  | { type: "model"; id: string; ref: string | null }
   /** Reset to here: keep history[0..keep), delete everything after. `seen`: history length the browser showed. */
   | { type: "reset"; id: string; keep: number; seen: number };
 
 export type ServerMsg =
   | { type: "conversations"; list: Conversation[]; listError: string | null }
   /** Sent on subscribe and after each turn: persisted history, tool logs and the events of the running turn so far. */
-  | { type: "snapshot"; id: string; history: HistoryMessage[]; tools: ToolLog[]; turn: GatewayEvent[]; historyError: string | null }
+  | { type: "snapshot"; id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null;
+      /** Chosen model provider ref; null = rocky's default (agents.rocky.model_provider). */
+      model: string | null }
   | { type: "event"; id: string; event: GatewayEvent }
   | { type: "error"; message: string }
   | { type: "unauthorized" };

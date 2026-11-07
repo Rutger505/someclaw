@@ -6,6 +6,7 @@ import { useBroker } from "./lib/broker";
 import { COMPOSER_KEYS, KEYMAP, useShortcuts } from "./lib/shortcuts";
 import { Chat, type ChatHandle } from "./components/Chat";
 import { Kbd, Sidebar } from "./components/Sidebar";
+import { ReloadBanner } from "./components/ReloadBanner";
 
 export const DASHBOARD_URL = "https://zeroclaw.homelab.rutgerpronk.com";
 
@@ -119,7 +120,10 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
           />
         </div>
       )}
-      <Chat ref={chat} id={openId} conv={conv} snap={snap} send={send} onDraft={setDraftEmpty} onToggleSidebar={() => setSidebar((x) => !x)} onOpen={open} />
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        <ReloadBanner busy={!!list?.some((c) => c.status === "running")} />
+        <Chat ref={chat} id={openId} conv={conv} snap={snap} send={send} onDraft={setDraftEmpty} onToggleSidebar={() => setSidebar((x) => !x)} onOpen={open} />
+      </div>
 
       {errors.length > 0 && (
         <div className="absolute top-4 right-4 z-30 flex w-96 max-w-[calc(100%-2rem)] flex-col gap-2">

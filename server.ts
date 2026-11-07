@@ -2,6 +2,7 @@
 // REST API on the same origin (the gateway has no CORS; the UI uses it for pairing).
 import { watch } from "node:fs";
 import { authorize, websocket, type Client } from "./server/broker";
+import { tokenValid } from "./server/gateway";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
@@ -54,6 +55,16 @@ Bun.serve<Client, never>({
         body: hasBody ? await req.arrayBuffer() : undefined,
         redirect: "manual",
       });
+    }
+
+    // The gateway takes /admin/reload only from loopback (allow_remote_admin is off): relayed from here, so the
+    // pairing token is checked here first. Unauthenticated loopback calls would otherwise let anyone reload it.
+    if (url.pathname === "/someclaw/reload" && req.method === "POST") {
+      const token = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+      if (!token || !(await tokenValid(token))) return new Response("unauthorized: pair again", { status: 401 });
+      const res = await fetch(`${GATEWAY}/admin/reload`, { method: "POST", signal: AbortSignal.timeout(30_000) });
+      console.log(`reload: gateway answered ${res.status}`);
+      return new Response(await res.text(), { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "text/plain" } });
     }
 
     if (url.pathname === "/someclaw/version") {

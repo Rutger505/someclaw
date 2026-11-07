@@ -48,6 +48,8 @@ export function useShortcuts(handler: (action: Action, e: KeyboardEvent) => bool
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       const b = KEYMAP.find((x) => x.match(e));
+      // An open popover (model picker) closes on Esc itself; Esc then must not stop the turn.
+      if (b?.action === "abort" && document.querySelector("[data-popover-open]")) return;
       if (!b || ref.current(b.action, e) === false) return;
       e.preventDefault();
       e.stopPropagation();

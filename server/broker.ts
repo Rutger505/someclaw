@@ -2,7 +2,7 @@
 // reloads and closed browsers. Browsers talk to it over /someclaw/ws (shared/protocol.ts).
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
-import { appendTools, readTools, save, state, truncateTools } from "./state";
+import { appendTools, appendTurn, readTools, readTurns, save, state, truncateTools, truncateTurns } from "./state";
 import { truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { rateLimitReset } from "./usage";
@@ -36,6 +36,10 @@ type Conv = {
   titleError: string | null;
   /** Turn ended, history loading: still "running" for the UI. */
   finishing?: boolean;
+  /** model_provider the open gateway socket was opened with ("" = default). */
+  upModel?: string;
+  /** done frame of the running turn: its model is stored on finish. */
+  done?: GatewayEvent;
 };
 
 
@@ -207,7 +211,7 @@ async function snapshot(id: string): Promise<ServerMsg> {
   } catch (e) {
     historyError = msg(e);
   }
-  return { type: "snapshot", id, history: h, tools: readTools(id), turn: convs.get(id)?.turn ?? [], historyError };
+  return { type: "snapshot", id, history: h, tools: readTools(id), turns: readTurns(id), turn: convs.get(id)?.turn ?? [], historyError, model: state.models[id] ?? null };
 }
 
 async function pushSnapshot(id: string) {
@@ -230,12 +234,16 @@ function record(c: Conv, event: GatewayEvent) {
   emit(c.id, event);
 }
 
+/** Gateway socket of a conversation. The model is fixed per socket: a changed choice reopens it between turns. */
 function upstream(c: Conv): Promise<WebSocket> {
   clearTimeout(c.idleTimer);
+  const model = state.models[c.id] ?? "";
+  if (c.upReady && c.upModel !== model && c.status !== "running") dropUpstream(c, "model changed");
   if (c.upReady) return c.upReady;
   if (!state.token) return Promise.reject(new Error("no gateway token: open someclaw in a browser and pair"));
-  const up = chatSocket(state.token, c.id);
+  const up = chatSocket(state.token, c.id, model || undefined);
   c.up = up;
+  c.upModel = model;
   c.upReady = new Promise((resolve, reject) => {
     up.onopen = () => resolve(up);
     up.onclose = (e) => {
@@ -256,6 +264,12 @@ function upstream(c: Conv): Promise<WebSocket> {
   return c.upReady;
 }
 
+function dropUpstream(c: Conv, reason: string) {
+  clearTimeout(c.idleTimer);
+  c.up?.close(1000, reason);
+  c.up = c.upReady = undefined;
+}
+
 function closeWhenIdle(c: Conv) {
   clearTimeout(c.idleTimer);
   c.idleTimer = setTimeout(() => {
@@ -273,6 +287,7 @@ function onEvent(c: Conv, m: GatewayEvent) {
   record(c, m);
   if (m.type === "tool_call" || m.type === "tool_result") c.tools.push(m);
   if (m.type === "done") {
+    c.done = m;
     resumeAttempts.delete(c.id);
     finish(c, "idle");
   }
@@ -293,6 +308,8 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   const failed = aborted || status === "error";
   const tools = c.tools;
   c.tools = [];
+  const done = c.done;
+  c.done = undefined;
   let h: HistoryMessage[] | null = null;
   for (let i = 0; i < 3 && !h; i++) {
     try {
@@ -308,6 +325,18 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
     // before this turn's reply (aborts store one too: "[interrupted by user]"), else at the end
     const at = h?.at(-1)?.role === "assistant" ? h.length - 1 : (h?.length ?? 0);
     appendTools(c.id, { at, events: tools });
+  }
+  if (done && h?.at(-1)?.role === "assistant") {
+    // configured ref the turn started on; served ref/model differ on a fallback
+    const ran = String(done.provider ?? "");
+    const provider = String(done.last_serving_provider_ref ?? done.provider_ref ?? ran);
+    const model = String(done.last_serving_model ?? done.model ?? "");
+    appendTurn(c.id, { at: h.length - 1, provider, model });
+    const asked = c.upModel;
+    if (asked && ran && ran !== asked) {
+      status = "error";
+      error = `model: asked for ${asked}, ZeroClaw ran ${ran}. The gateway ignored model_provider on /ws/chat (needs the per-conversation model patch).`;
+    }
   }
   c.status = status;
   c.finishing = false;
@@ -568,18 +597,30 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       if (c.status === "running" || c.finishing || runningElsewhere.has(m.id)) return fail("reset: a turn is running, stop it first");
       cancelResume(m.id);
       // Fresh gateway socket for the next turn: it seeds from the truncated transcript.
-      clearTimeout(c.idleTimer);
-      c.up?.close(1000, "reset");
-      c.up = c.upReady = undefined;
+      dropUpstream(c, "reset");
       try {
         const deleted = truncateSession(m.id, m.keep, m.seen);
         truncateTools(m.id, m.keep);
+        truncateTurns(m.id, m.keep);
         console.log(`broker: reset ${m.id} to ${m.keep} messages, ${deleted} deleted (${ws.data.ua})`);
       } catch (e) {
         fail(`reset: ${msg(e)}`);
       }
       c.error = null;
       await refresh();
+      return pushSnapshot(m.id);
+    }
+
+    case "model": {
+      if (m.ref !== null && !/^[\w-]+\.[\w-]+$/.test(m.ref)) return fail(`model: bad provider ref ${JSON.stringify(m.ref)}`);
+      if (readOnly(m.id)) return fail(`model: ${readOnly(m.id)}`);
+      if (m.ref) state.models[m.id] = m.ref;
+      else delete state.models[m.id];
+      save();
+      console.log(`broker: model ${m.id} -> ${m.ref ?? "default"} (${ws.data.ua})`);
+      // Idle: reopen now-ish (next turn). Running: the turn keeps its model, upstream() reopens before the next one.
+      const c = convs.get(m.id);
+      if (c?.up && c.status !== "running") dropUpstream(c, "model changed");
       return pushSnapshot(m.id);
     }
 
