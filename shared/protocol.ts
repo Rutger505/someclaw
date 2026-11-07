@@ -13,6 +13,8 @@ export type Resume = {
   /** What `at` is based on: usage window that is full (e.g. seven_day), or why the fixed interval is used. */
   reason: string;
   attempt: number;
+  /** Attempts before the broker gives up (absent in waits saved by older versions). */
+  max?: number;
 };
 
 export type Conversation = {

@@ -360,7 +360,7 @@ function Waiting({ resume, onCancel }: { resume: Resume; onCancel: () => void })
       <div className="min-w-0 flex-1">
         <p className="font-medium text-fg">
           Resumes automatically {sameDay ? "at" : "on"} {when}
-          <span className="font-normal text-muted"> · attempt {resume.attempt}</span>
+          <span className="font-normal text-muted"> · attempt {resume.attempt}{resume.max ? `/${resume.max}` : ""}</span>
         </p>
         <p className="font-mono text-xs break-words text-fg-2">{resume.reason}</p>
       </div>

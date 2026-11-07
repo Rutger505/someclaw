@@ -369,13 +369,13 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
 }
 
 // ---------- auto-resume after rate limits ----------
-// ZeroClaw gives up on a 429 within seconds and drops the reset headers; the reset time comes from the usage
-// endpoint (server/usage.ts). Waits survive restarts (state.resume).
+// ZeroClaw gives up on a 429 within seconds and drops the reset headers; the reset time comes from Anthropic's
+// usage endpoint (server/usage.ts). No reset from Anthropic: short fixed retry. Hard cap on attempts either way,
+// we don't keep hammering on our own guesses. Waits survive restarts (state.resume).
 
 const RESUME_MARGIN_MS = 60_000; // after the reported reset
-const SHORT_LIMIT_MS = 5 * 60_000; // rate-limited but no usage window full: per-minute limits
-const USAGE_FAILED_MS = 15 * 60_000;
-const MAX_RESUME_ATTEMPTS = 20;
+const FALLBACK_RETRY_MS = 5 * 60_000; // no reset time from Anthropic (short limit, or usage endpoint failed)
+const MAX_RESUME_ATTEMPTS = 3;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const resumeTimers = new Map<string, Timer>();
 const resumeAttempts = new Map<string, number>();
@@ -385,6 +385,11 @@ async function scheduleResume(id: string) {
   if (attempt > MAX_RESUME_ATTEMPTS) {
     console.error(`broker: resume ${id}: still rate-limited after ${MAX_RESUME_ATTEMPTS} attempts, giving up`);
     resumeAttempts.delete(id);
+    const c = convs.get(id);
+    if (c && c.status === "error") {
+      c.error = `${c.error ?? "rate limited"} (auto-resume gave up after ${MAX_RESUME_ATTEMPTS} attempts)`;
+      broadcastList();
+    }
     return;
   }
   resumeAttempts.set(id, attempt);
@@ -396,17 +401,17 @@ async function scheduleResume(id: string) {
       at = Math.max(Date.parse(reset.at), Date.now()) + RESUME_MARGIN_MS;
       reason = `${reset.window} usage at 100%, resets ${reset.at}`;
     } else {
-      at = Date.now() + SHORT_LIMIT_MS;
+      at = Date.now() + FALLBACK_RETRY_MS;
       reason = "no usage window full (short rate limit): retry in 5 min";
     }
   } catch (e) {
-    at = Date.now() + USAGE_FAILED_MS;
-    reason = `reset time unknown (${msg(e)}): retry in 15 min`;
+    at = Date.now() + FALLBACK_RETRY_MS;
+    reason = `reset time unknown (${msg(e)}): retry in 5 min`;
   }
   if (convs.get(id)?.status === "running") return; // user started a new turn meanwhile
-  state.resume[id] = { at: new Date(at).toISOString(), reason, attempt };
+  state.resume[id] = { at: new Date(at).toISOString(), reason, attempt, max: MAX_RESUME_ATTEMPTS };
   save();
-  console.log(`broker: resume ${id} at ${state.resume[id].at} (attempt ${attempt}): ${reason}`);
+  console.log(`broker: resume ${id} at ${state.resume[id].at} (attempt ${attempt}/${MAX_RESUME_ATTEMPTS}): ${reason}`);
   armResume(id);
   broadcastList();
 }
