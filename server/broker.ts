@@ -3,7 +3,7 @@
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
 import { appendTools, appendTurn, readTools, readTurns, save, state, truncateTools, truncateTurns } from "./state";
-import { truncateSession } from "./sessions";
+import { clearDeadTurns, truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { rateLimitReset } from "./usage";
 import {
@@ -40,6 +40,10 @@ type Conv = {
   upModel?: string;
   /** done frame of the running turn: its model is stored on finish. */
   done?: GatewayEvent;
+  /** Last gateway frame of the running turn (or its start): the silence watchdog's clock. */
+  lastFrameAt?: number;
+  /** tool_call/approval_request frames still waiting for their result: silence is expected then. */
+  pending?: number;
 };
 
 
@@ -128,6 +132,7 @@ function refresh() {
       ]);
       sessions = all.sessions.filter((s) => s.agent_alias === AGENT && !s.session_id.startsWith(TITLE_PREFIX));
       runningElsewhere = new Set(running.sessions.map((s) => s.session_id).filter((id) => convs.get(id)?.status !== "running"));
+      if (runningElsewhere.size) await clearDead(token);
       for (const s of sessions) {
         forgetIfRecreated(s);
         // First sighting counts as seen: only activity after that is unread.
@@ -146,6 +151,27 @@ function refresh() {
   })());
 }
 setInterval(() => clients.size && refresh(), POLL_MS);
+
+// Turns the gateway still lists as running after a crash/restart (it doesn't reset them): they never finish, so the
+// conversation would look busy forever. Only checked while something runs outside someclaw.
+async function clearDead(token: string) {
+  try {
+    const { daemon_started_at } = await api<{ daemon_started_at: string }>(token, "/api/status");
+    const dead = clearDeadTurns(daemon_started_at);
+    if (!dead.length) return;
+    console.error(`broker: turns killed by a gateway restart (${daemon_started_at}), marked failed: ${dead.join(", ")}`);
+    for (const id of dead) {
+      runningElsewhere.delete(id);
+      const c = conv(id);
+      if (c.status !== "running") {
+        c.status = "error";
+        c.error = `turn died: ZeroClaw restarted at ${daemon_started_at} while it ran (no reply was stored)`;
+      }
+    }
+  } catch (e) {
+    console.error("broker: dead-turn check:", msg(e));
+  }
+}
 
 function forgetIfRecreated(s: GatewaySession) {
   const id = s.session_id;
@@ -256,7 +282,9 @@ function upstream(c: Conv): Promise<WebSocket> {
   c.upReady.catch(() => {});
   up.onmessage = (e) => {
     try {
-      onEvent(c, JSON.parse(String(e.data)));
+      const m = JSON.parse(String(e.data)) as GatewayEvent;
+      if (c.up === up && !QUIET_FRAMES.has(String(m.type))) c.lastFrameAt = Date.now();
+      onEvent(c, m);
     } catch (err) {
       console.error(`broker: bad gateway frame for ${c.id}:`, err);
     }
@@ -286,6 +314,8 @@ function onEvent(c: Conv, m: GatewayEvent) {
   }
   record(c, m);
   if (m.type === "tool_call" || m.type === "tool_result") c.tools.push(m);
+  if (m.type === "tool_call" || m.type === "approval_request") c.pending = (c.pending ?? 0) + 1;
+  if (m.type === "tool_result" || m.type === "sop_approval_result") c.pending = Math.max(0, (c.pending ?? 0) - 1);
   if (m.type === "done") {
     c.done = m;
     resumeAttempts.delete(c.id);
@@ -355,6 +385,8 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   c.error = null;
   c.turn = [];
   c.tools = [];
+  c.lastFrameAt = Date.now();
+  c.pending = 0;
   if (!session(c.id)?.message_count) state.previews[c.id] ??= text.slice(0, 200);
   save();
   record(c, fork ? { type: "user", content: text, fork: fork.ref } : { type: "user", content: text });
@@ -366,6 +398,35 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
     record(c, { type: "error", message: msg(e) });
     finish(c, "error", msg(e));
   }
+}
+
+// ---------- silence watchdog ----------
+// A turn whose gateway goes quiet (no text, no tool call, no thinking) for SILENCE_MS is stuck: seen as conversations
+// that looked busy forever. Aborted and marked failed. Not while a tool runs or waits for approval (tools have their
+// own timeouts). Generous: one long reply (e.g. writing a big file) streams nothing until its tool call arrives.
+
+const SILENCE_MS = Number(process.env.SOMECLAW_SILENCE_MS) || 10 * 60_000;
+// Socket/handshake frames: not a sign the turn is alive.
+const QUIET_FRAMES = new Set(["session_start", "connected", "connect"]);
+
+setInterval(() => {
+  const now = Date.now();
+  for (const c of convs.values())
+    if (c.status === "running" && !c.finishing && !c.pending && now - (c.lastFrameAt ?? now) > SILENCE_MS) stalled(c);
+}, Math.min(15_000, SILENCE_MS / 2));
+
+async function stalled(c: Conv) {
+  const after = SILENCE_MS >= 120_000 ? `${Math.round(SILENCE_MS / 60_000)} min` : `${Math.round(SILENCE_MS / 1000)} s`;
+  const error = `no response from the gateway for ${after} (no text, no tool calls): turn aborted by someclaw`;
+  console.error(`broker: ${c.id}: ${error}`);
+  record(c, { type: "error", message: error });
+  // Fresh socket for the next turn; the closed one's onclose ignores it (c.up already replaced).
+  dropUpstream(c, "stalled");
+  finish(c, "error", error);
+  if (state.token)
+    await api(state.token, `/api/sessions/${encodeURIComponent(c.id)}/abort`, { method: "POST" }).catch((e) =>
+      console.error(`broker: abort stalled ${c.id}:`, msg(e)),
+    );
 }
 
 // ---------- auto-resume after rate limits ----------
