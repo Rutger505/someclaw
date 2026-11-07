@@ -1,6 +1,6 @@
 import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, GitBranch, Lock, PanelLeft, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ClientMsg, Conversation, Resume } from "../../shared/protocol";
+import type { ClientMsg, Conversation, Resume, TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "../lib/broker";
 import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
@@ -275,12 +275,7 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
         <div className="group max-w-full">
           <Markdown text={item.text} />
           {item.live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-accent align-middle" />}
-          {!item.live && (
-            <div className="flex items-center gap-2">
-              <Actions text={item.text} reset={reset} />
-              {item.model && <span className="ml-auto truncate font-mono text-[11px] text-faint" title="Model that wrote this reply">{item.model}</span>}
-            </div>
-          )}
+          {!item.live && <Actions text={item.text} reset={reset} turn={item.turn} />}
         </div>
       );
     case "tools":
@@ -290,8 +285,31 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
   }
 }
 
-/** Under a message, on hover (always on touch): copy its full text, reset the conversation to it (asks first). */
-function Actions({ text, reset }: { text: string; reset?: Reset }) {
+const tok = (n: number) => (n < 1000 ? String(n) : n < 1e6 ? `${(n / 1e3).toFixed(1)}k` : `${(n / 1e6).toFixed(2)}M`);
+const pad = (n: number) => String(n).padStart(2, "0");
+function dur(ms: number) {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${pad(Math.floor(s % 60))}s` : `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
+}
+
+/** Model · tokens · duration of a reply's turn, in the hover bar. */
+function TurnInfo({ t }: { t: TurnModel }) {
+  const parts = [`${t.provider} · ${t.model}`];
+  if (t.input !== undefined && t.output !== undefined) parts.push(`${tok(t.input)} in · ${tok(t.output)} out`);
+  if (t.ms !== undefined) parts.push(dur(t.ms));
+  const title = [
+    `Model: ${t.provider} · ${t.model}`,
+    t.input !== undefined && `Input: ${t.input.toLocaleString()} tokens, summed over every model call this turn${t.cached !== undefined ? ` (${t.cached.toLocaleString()} cached)` : ""}`,
+    t.output !== undefined && `Output: ${t.output.toLocaleString()} tokens`,
+    t.ms !== undefined && `Turn took ${dur(t.ms)} (send to done)`,
+  ].filter(Boolean).join("\n");
+  return <span className="min-w-0 truncate px-1.5 font-mono text-[11px] text-faint" title={title}>{parts.join(" · ")}</span>;
+}
+
+/** Under a message, on hover (always on touch): copy its full text, reset the conversation to it (asks first), turn info. */
+function Actions({ text, reset, turn }: { text: string; reset?: Reset; turn?: TurnModel }) {
   const [copied, setCopied] = useState<"ok" | string | null>(null);
   const [confirm, setConfirm] = useState(false);
   useEffect(() => {
@@ -332,6 +350,7 @@ function Actions({ text, reset }: { text: string; reset?: Reset }) {
         </button>
       )}
       {copied && copied !== "ok" && <span className="px-1.5 font-mono text-err">{copied}</span>}
+      {turn && <TurnInfo t={turn} />}
     </div>
   );
 }

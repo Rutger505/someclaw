@@ -52,8 +52,9 @@ export type HistoryMessage = {
 /** Tool events of a finished turn, shown before history[at] (its assistant reply). Gateway /ws/chat history has no tools. */
 export type ToolLog = { at: number; events: GatewayEvent[] };
 
-/** Model that answered history[at], from the turn's done frame. provider: serving provider ref (e.g. anthropic.opus). */
-export type TurnModel = { at: number; provider: string; model: string };
+/** Model that answered history[at], from the turn's done frame. provider: serving provider ref (e.g. anthropic.opus).
+ * Tokens summed over the turn's model calls (input includes cached); ms: send to done. Absent in turns saved before. */
+export type TurnModel = { at: number; provider: string; model: string; input?: number; cached?: number; output?: number; ms?: number };
 
 /** A configured provider profile (providers.models.<family>.<alias>). ref = "<family>.<alias>". */
 export type ModelOption = { ref: string; family: string; alias: string; model: string };

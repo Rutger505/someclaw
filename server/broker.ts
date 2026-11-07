@@ -38,8 +38,11 @@ type Conv = {
   finishing?: boolean;
   /** model_provider the open gateway socket was opened with ("" = default). */
   upModel?: string;
-  /** done frame of the running turn: its model is stored on finish. */
+  /** done frame of the running turn: its model and tokens are stored on finish. */
   done?: GatewayEvent;
+  /** When the running turn started and its done frame arrived: the turn's duration. */
+  startedAt?: number;
+  doneAt?: number;
   /** Last gateway frame of the running turn (or its start): the silence watchdog's clock. */
   lastFrameAt?: number;
   /** tool_call/approval_request frames still waiting for their result: silence is expected then. */
@@ -318,6 +321,7 @@ function onEvent(c: Conv, m: GatewayEvent) {
   if (m.type === "tool_result" || m.type === "sop_approval_result") c.pending = Math.max(0, (c.pending ?? 0) - 1);
   if (m.type === "done") {
     c.done = m;
+    c.doneAt = Date.now();
     resumeAttempts.delete(c.id);
     finish(c, "idle");
   }
@@ -361,7 +365,11 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
     const ran = String(done.provider ?? "");
     const provider = String(done.last_serving_provider_ref ?? done.provider_ref ?? ran);
     const model = String(done.last_serving_model ?? done.model ?? "");
-    appendTurn(c.id, { at: h.length - 1, provider, model });
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    const usage = Array.isArray(done.usage_by_provider) ? (done.usage_by_provider as Record<string, unknown>[]) : [];
+    const cached = usage.reduce<number | undefined>((sum, u) => (num(u.cached_input_tokens) === undefined ? sum : (sum ?? 0) + num(u.cached_input_tokens)!), undefined);
+    const ms = c.startedAt && c.doneAt ? c.doneAt - c.startedAt : undefined;
+    appendTurn(c.id, { at: h.length - 1, provider, model, input: num(done.input_tokens), cached, output: num(done.output_tokens), ms });
     const asked = c.upModel;
     if (asked && ran && ran !== asked) {
       status = "error";
@@ -385,7 +393,8 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   c.error = null;
   c.turn = [];
   c.tools = [];
-  c.lastFrameAt = Date.now();
+  c.lastFrameAt = c.startedAt = Date.now();
+  c.doneAt = undefined;
   c.pending = 0;
   if (!session(c.id)?.message_count) state.previews[c.id] ??= text.slice(0, 200);
   save();
