@@ -59,7 +59,9 @@ export type ClientMsg =
   /** Running: stops the turn. Waiting: cancels the auto-resume. */
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
-  | { type: "rename"; id: string; name: string };
+  | { type: "rename"; id: string; name: string }
+  /** Reset to here: keep history[0..keep), delete everything after. `seen`: history length the browser showed. */
+  | { type: "reset"; id: string; keep: number; seen: number };
 
 export type ServerMsg =
   | { type: "conversations"; list: Conversation[]; listError: string | null }

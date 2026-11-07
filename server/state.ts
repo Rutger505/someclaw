@@ -53,6 +53,12 @@ export function save() {
 // Tool logs per conversation, one file each (outputs can be large).
 const toolFile = (id: string) => `${DIR}/tools/${encodeURIComponent(id)}.json`;
 export const readTools = (id: string): ToolLog[] => read(toolFile(id), []);
+/** Reset to here: drops the tool logs of the deleted turns (shown before history[at], so the kept ones are at < keep). */
+export function truncateTools(id: string, keep: number) {
+  const logs = readTools(id);
+  const kept = logs.filter((l) => l.at < keep);
+  if (kept.length !== logs.length) write(toolFile(id), JSON.stringify(kept));
+}
 export function appendTools(id: string, log: ToolLog) {
   if (!log.events.length) return;
   write(toolFile(id), JSON.stringify([...readTools(id), log]));

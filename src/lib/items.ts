@@ -3,8 +3,9 @@ import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
 export type Item =
-  | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef }
-  | { kind: "agent"; text: string; live?: boolean }
+  /** at: index in the persisted history (reset to here); absent for the running turn. */
+  | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef; at?: number }
+  | { kind: "agent"; text: string; live?: boolean; at?: number }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
   | { kind: "meta"; text: string; error?: boolean };
 
@@ -62,8 +63,8 @@ export function buildItems(s: Snapshot): Item[] {
   };
   s.history.forEach((m, i) => {
     toolsAt(i);
-    if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork });
-    else if (m.role === "assistant") items.push({ kind: "agent", text: m.content });
+    if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork, at: i });
+    else if (m.role === "assistant") items.push({ kind: "agent", text: m.content, at: i });
     else items.push({ kind: "meta", text: `${m.role}: ${m.content}` });
   });
   for (const log of s.tools) if (log.at >= s.history.length) for (const e of log.events) addEvent(items, e, false);

@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, CircleAlert, Clock, CornerDownRight, GitBranch, Lock, PanelLeft, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, GitBranch, Lock, PanelLeft, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ClientMsg, Conversation, Resume } from "../../shared/protocol";
 import type { Snapshot } from "../lib/broker";
@@ -33,6 +33,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const stick = useRef(true); // follow new output only while scrolled to the bottom
   const items = useMemo(() => (snap?.id === id ? buildItems(snap) : []), [snap, id]);
   const running = conv?.status === "running";
+  const historyLen = snap?.id === id ? snap.history.length : 0;
   const readOnly = !!conv?.channel;
   // Channel threads start locked: typing there forks, so it takes a deliberate click or Ctrl+Shift+F.
   const [unlocked, setUnlocked] = useState(false);
@@ -143,7 +144,16 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           {!snap && <p className="text-sm text-muted">Loading…</p>}
           {snap && !items.length && <Empty />}
           {items.map((item, i) => (
-            <Row key={i} item={item} />
+            <Row
+              key={i}
+              item={item}
+              // Reset to here: own conversations, between turns, only with something below to delete.
+              reset={
+                !readOnly && !running && "at" in item && item.at !== undefined && i < items.length - 1
+                  ? { below: historyLen - item.at - 1, run: () => send({ type: "reset", id, keep: item.at! + 1, seen: historyLen }) }
+                  : undefined
+              }
+            />
           ))}
           {conv?.error && !running && <Banner label="Turn failed" text={conv.error} />}
           {conv?.resume && !running && <Waiting resume={conv.resume} onCancel={() => send({ type: "abort", id })} />}
@@ -239,11 +249,13 @@ function Locked({ channel, onUnlock }: { channel: string; onUnlock: () => void }
   );
 }
 
-function Row({ item }: { item: Item }) {
+type Reset = { below: number; run: () => void };
+
+function Row({ item, reset }: { item: Item; reset?: Reset }) {
   switch (item.kind) {
     case "user":
       return (
-        <div className="ml-auto flex max-w-[85%] flex-col items-end gap-1">
+        <div className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
           {item.steer && (
             <span className="flex items-center gap-1 text-xs text-accent">
               <CornerDownRight size={12} /> steered
@@ -255,13 +267,15 @@ function Row({ item }: { item: Item }) {
             </a>
           )}
           <div className="max-w-full rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap wrap-anywhere ring-1 ring-line">{item.text}</div>
+          <Actions text={item.text} reset={reset} />
         </div>
       );
     case "agent":
       return (
-        <div className="max-w-full">
+        <div className="group max-w-full">
           <Markdown text={item.text} />
           {item.live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-accent align-middle" />}
+          {!item.live && <Actions text={item.text} reset={reset} />}
         </div>
       );
     case "tools":
@@ -269,6 +283,52 @@ function Row({ item }: { item: Item }) {
     case "meta":
       return item.error ? <Banner text={item.text} /> : <p className="text-xs text-muted">{item.text}</p>;
   }
+}
+
+/** Under a message, on hover (always on touch): copy its full text, reset the conversation to it (asks first). */
+function Actions({ text, reset }: { text: string; reset?: Reset }) {
+  const [copied, setCopied] = useState<"ok" | string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => {
+    if (copied !== "ok") return;
+    const t = setTimeout(() => setCopied(null), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copy = () =>
+    navigator.clipboard
+      .writeText(text)
+      .then(() => setCopied("ok"))
+      .catch((e) => setCopied(`copy failed: ${e instanceof Error ? e.message : String(e)}`));
+  const btn = "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs transition-colors";
+  const quiet = `${btn} text-muted hover:bg-elevated hover:text-fg`;
+
+  if (confirm && reset)
+    return (
+      <div className="-mx-1.5 mt-0.5 flex items-center gap-1 text-xs">
+        <span className="px-1.5 text-fg-2">
+          Delete {reset.below} message{reset.below === 1 ? "" : "s"} below?
+        </span>
+        <button onClick={() => (setConfirm(false), reset.run())} className={`${btn} text-err ring-1 ring-err/40 hover:bg-err/15`}>
+          <RotateCcw size={13} /> Reset to here
+        </button>
+        <button onClick={() => setConfirm(false)} className={quiet} title="Cancel">
+          <X size={13} />
+        </button>
+      </div>
+    );
+  return (
+    <div className={`-mx-1.5 mt-0.5 flex items-center gap-0.5 transition-opacity ${copied ? "" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100"}`}>
+      <button onClick={copy} className={quiet} title="Copy message">
+        {copied === "ok" ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
+      </button>
+      {reset && (
+        <button onClick={() => setConfirm(true)} className={quiet} title="Delete every message below this one, rocky's context included">
+          <RotateCcw size={14} /> Reset to here
+        </button>
+      )}
+      {copied && copied !== "ok" && <span className="px-1.5 font-mono text-err">{copied}</span>}
+    </div>
+  );
 }
 
 /** Real error text, framed: label in sans, the message itself verbatim in mono. */

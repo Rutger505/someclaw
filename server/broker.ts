@@ -2,7 +2,8 @@
 // reloads and closed browsers. Browsers talk to it over /someclaw/ws (shared/protocol.ts).
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
-import { appendTools, readTools, save, state } from "./state";
+import { appendTools, readTools, save, state, truncateTools } from "./state";
+import { truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { rateLimitReset } from "./usage";
 import {
@@ -557,6 +558,30 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       else delete state.archived[m.id];
       save();
       return broadcastList();
+
+    // Reset to here: history after history[keep - 1] is deleted, the model's context included.
+    case "reset": {
+      const ro = readOnly(m.id);
+      if (ro) return fail(`reset: ${ro}`);
+      await refresh();
+      const c = conv(m.id);
+      if (c.status === "running" || c.finishing || runningElsewhere.has(m.id)) return fail("reset: a turn is running, stop it first");
+      cancelResume(m.id);
+      // Fresh gateway socket for the next turn: it seeds from the truncated transcript.
+      clearTimeout(c.idleTimer);
+      c.up?.close(1000, "reset");
+      c.up = c.upReady = undefined;
+      try {
+        const deleted = truncateSession(m.id, m.keep, m.seen);
+        truncateTools(m.id, m.keep);
+        console.log(`broker: reset ${m.id} to ${m.keep} messages, ${deleted} deleted (${ws.data.ua})`);
+      } catch (e) {
+        fail(`reset: ${msg(e)}`);
+      }
+      c.error = null;
+      await refresh();
+      return pushSnapshot(m.id);
+    }
 
     case "rename":
       try {
