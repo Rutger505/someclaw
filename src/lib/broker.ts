@@ -11,7 +11,7 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
   const [listError, setListError] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [link, setLink] = useState<Link>("connecting");
-  const [errors, setErrors] = useState<{ at: number; message: string }[]>([]);
+  const [errors, setErrors] = useState<{ at: number; message: string; link?: true }[]>([]);
   const ws = useRef<WebSocket>(null);
   const openRef = useRef(openId);
   openRef.current = openId;
@@ -31,6 +31,8 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
       ws.current = sock;
       sock.onopen = () => {
         setLink("open");
+        // Reconnected (e.g. someclaw deploy restart): the close errors are resolved.
+        setErrors((x) => x.filter((e) => !e.link));
         sock.send(JSON.stringify({ type: "subscribe", id: openRef.current } satisfies ClientMsg));
       };
       sock.onclose = async (e) => {
@@ -39,7 +41,7 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
         // The upgrade's 401 is invisible here: ask over REST.
         const auth = await fetch("/api/status", { headers: { authorization: `Bearer ${getToken()}` } }).catch(() => null);
         if (auth?.status === 401 || e.code === 4001) return onUnauthorized();
-        setErrors((x) => [...x, { at: Date.now(), message: `broker socket closed ${e.code} ${e.reason}, reconnecting` }]);
+        setErrors((x) => [...x, { at: Date.now(), message: `broker socket closed ${e.code} ${e.reason}, reconnecting`, link: true }]);
         retry = setTimeout(connect, 2000);
       };
       sock.onmessage = (e) => {
