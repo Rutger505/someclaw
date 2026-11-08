@@ -105,3 +105,54 @@ export function parseFork(content: string): { text: string; fork?: ForkRef } {
   if (!m) return { text: content };
   return { text: content.slice(m[0].length), fork: { id: m[1]!, channel: m[2]!, messages: Number(m[3]) } };
 }
+
+/** Channel sessions store tool-using turns natively, as JSON in content:
+ * assistant {content, reasoning_content?, tool_calls: [{id, name, arguments}]}, tool {content, tool_call_id}. */
+export type NativeCall = { id: string; name: string; args: unknown };
+
+const json = (s: string): Record<string, unknown> | null => {
+  if (!s.startsWith("{")) return null;
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Assistant content: plain text, or a native tool-call turn (reasoning dropped, it's an opaque signature). */
+export function assistantParts(content: string): { text: string; calls: NativeCall[] } {
+  const v = json(content);
+  if (!v || !("tool_calls" in v || "reasoning_content" in v)) return { text: content, calls: [] };
+  const calls = (Array.isArray(v.tool_calls) ? v.tool_calls : []).map((c: Record<string, unknown>) => {
+    const raw = c.arguments;
+    let args: unknown = raw ?? {};
+    if (typeof raw === "string") args = json(raw) ?? raw;
+    return { id: String(c.id ?? ""), name: String(c.name ?? "?"), args };
+  });
+  return { text: typeof v.content === "string" ? v.content : "", calls };
+}
+
+/** Tool message content: native result, or null when it isn't one. */
+export function toolResult(content: string): { id: string; output: string } | null {
+  const v = json(content);
+  if (!v || !("tool_call_id" in v)) return null;
+  return { id: String(v.tool_call_id), output: typeof v.content === "string" ? v.content : JSON.stringify(v.content) };
+}
+
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)} [...]` : s);
+
+/** One history message as transcript text (fork context, titles); null = nothing worth showing. */
+export function plainText(m: HistoryMessage, tools = true): string | null {
+  if (m.role === "assistant") {
+    const { text, calls } = assistantParts(m.content);
+    const parts = [text.trim(), ...(tools ? calls.map((c) => `[tool ${c.name}: ${clip(typeof c.args === "string" ? c.args : JSON.stringify(c.args), 300)}]`) : [])];
+    return parts.filter(Boolean).join("\n") || null;
+  }
+  if (m.role === "tool") {
+    if (!tools) return null;
+    const r = toolResult(m.content);
+    return `[result: ${clip((r?.output ?? m.content).trim(), 500)}]`;
+  }
+  return m.content;
+}

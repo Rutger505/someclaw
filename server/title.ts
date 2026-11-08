@@ -1,7 +1,7 @@
 // Auto-titles (like OpenClaw): one turn of a small, tool-less agent in a throwaway session, then PUT the name.
 // The agent is defined in zeroclaw-config (agents.titler, cheap model); without it titling fails and the preview stays.
 import { api, chatSocket } from "./gateway";
-import { stripDatePrefix, type HistoryMessage } from "../shared/protocol";
+import { plainText, stripDatePrefix, type HistoryMessage } from "../shared/protocol";
 
 export const TITLE_PREFIX = "someclaw-title-";
 const TITLE_AGENT = process.env.SOMECLAW_TITLE_AGENT ?? "titler";
@@ -28,7 +28,10 @@ export function clean(raw: string) {
 
 /** Web chats: titled by their first exchange. Channel sessions (`recent`): one endless thread, titled by its latest messages. */
 export async function generateTitle(token: string, id: string, history: HistoryMessage[], recent = false) {
-  const chat = history.filter((m) => m.role === "user" || m.role === "assistant");
+  const chat = history
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ ...m, content: plainText(m, false) ?? "" }))
+    .filter((m) => m.content);
   const picked = recent
     ? chat.slice(-6)
     : [chat.find((m) => m.role === "user"), chat.find((m) => m.role === "assistant")].filter((m) => !!m);

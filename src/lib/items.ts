@@ -1,4 +1,4 @@
-import { RESUME_TEXT, type ForkRef, type GatewayEvent, type TurnModel } from "../../shared/protocol";
+import { RESUME_TEXT, assistantParts, toolResult, type ForkRef, type GatewayEvent, type TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
@@ -66,9 +66,14 @@ export function buildItems(s: Snapshot): Item[] {
     toolsAt(i);
     if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork, at: i });
     else if (m.role === "assistant") {
-      items.push({ kind: "agent", text: m.content, at: i, turn: s.turns.find((t) => t.at === i) });
-    }
-    else items.push({ kind: "meta", text: `${m.role}: ${m.content}` });
+      // Channel sessions: tool-using turns are stored as native JSON (text + tool_calls), results as role "tool".
+      const { text, calls } = assistantParts(m.content);
+      if (text.trim() || !calls.length) items.push({ kind: "agent", text, at: i, turn: s.turns.find((t) => t.at === i) });
+      for (const c of calls) addEvent(items, { type: "tool_call", id: c.id, name: c.name, args: c.args }, false);
+    } else if (m.role === "tool" && toolResult(m.content)) {
+      const r = toolResult(m.content)!;
+      addEvent(items, { type: "tool_result", id: r.id, output: r.output }, false);
+    } else items.push({ kind: "meta", text: `${m.role}: ${m.content}` });
   });
   for (const log of s.tools) if (log.at >= s.history.length) for (const e of log.events) addEvent(items, e, false);
   const turn: Item[] = []; // own array: "done" only fills in text when this turn streamed none

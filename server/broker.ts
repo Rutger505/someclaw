@@ -10,6 +10,7 @@ import {
   RESUME_TEXT,
   forkPrompt,
   parseFork,
+  plainText,
   stripDatePrefix,
   type ClientMsg,
   type ForkRef,
@@ -587,9 +588,11 @@ const FORK_MAX_MESSAGE_CHARS = 4_000;
 function transcript(h: HistoryMessage[]) {
   const lines: string[] = [];
   let chars = 0;
-  for (const m of h.filter((m) => m.role === "user" || m.role === "assistant").reverse()) {
-    const content = m.content.length > FORK_MAX_MESSAGE_CHARS ? `${m.content.slice(0, FORK_MAX_MESSAGE_CHARS)} [...]` : m.content;
-    const line = `${m.role === "user" ? "User" : "Assistant"} (${m.created_at}): ${content}`;
+  for (const m of h.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool").reverse()) {
+    const text = plainText(m);
+    if (!text) continue;
+    const content = text.length > FORK_MAX_MESSAGE_CHARS ? `${text.slice(0, FORK_MAX_MESSAGE_CHARS)} [...]` : text;
+    const line = `${m.role === "user" ? "User" : m.role === "tool" ? "Tool" : "Assistant"} (${m.created_at}): ${content}`;
     if (lines.length >= FORK_MAX_MESSAGES || chars + line.length > FORK_MAX_CHARS) break;
     lines.unshift(line);
     chars += line.length;
