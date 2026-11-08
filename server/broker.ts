@@ -2,8 +2,21 @@
 // reloads and closed browsers. Browsers talk to it over /someclaw/ws (shared/protocol.ts).
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
-import { appendTools, appendTurn, readTools, readTurns, save, state, truncateTools, truncateTurns } from "./state";
-import { clearDeadTurns, truncateSession } from "./sessions";
+import {
+  appendTools,
+  appendTurn,
+  dropInflight,
+  readInflight,
+  readTools,
+  readTurns,
+  save,
+  state,
+  truncateTools,
+  truncateTurns,
+  writeInflight,
+  type Inflight,
+} from "./state";
+import { clearDeadTurns, parseTime, truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { rateLimitReset } from "./usage";
 import { previewText } from "../shared/attachments";
@@ -11,6 +24,8 @@ import {
   RESUME_TEXT,
   forkPrompt,
   parseFork,
+  parseResent,
+  resendPrompt,
   plainText,
   stripDatePrefix,
   type ClientMsg,
@@ -49,6 +64,10 @@ type Conv = {
   lastFrameAt?: number;
   /** tool_call/approval_request frames still waiting for their result: silence is expected then. */
   pending?: number;
+  /** Running turn's record on disk (prompt + steps): reattach after a someclaw restart, resend after a ZeroClaw one. */
+  rec?: Inflight;
+  /** Gateway socket lost mid-turn: polling the gateway to see whether the turn survived (recover()). */
+  recovering?: boolean;
 };
 
 
@@ -229,8 +248,9 @@ async function history(id: string): Promise<HistoryMessage[]> {
   const res = await api<{ messages: HistoryMessage[] }>(state.token, `/api/sessions/${encodeURIComponent(id)}/messages`);
   return res.messages.map((m) => {
     if (m.role !== "user") return m;
-    const { text, fork } = parseFork(stripDatePrefix(m.content));
-    return fork ? { ...m, content: text, fork } : { ...m, content: text };
+    const { text: content, resent } = parseResent(stripDatePrefix(m.content));
+    const { text, fork } = parseFork(content);
+    return { ...m, content: text, ...(fork && { fork }), ...(resent && { resent }) };
   });
 }
 
@@ -275,13 +295,19 @@ function upstream(c: Conv): Promise<WebSocket> {
   const up = chatSocket(state.token, c.id, model || undefined);
   c.up = up;
   c.upModel = model;
+  let opened = false;
   c.upReady = new Promise((resolve, reject) => {
-    up.onopen = () => resolve(up);
+    up.onopen = () => {
+      opened = true;
+      resolve(up);
+    };
     up.onclose = (e) => {
       reject(new Error(`gateway socket closed ${e.code} ${e.reason || "(no reason: bad token, unknown agent or wss.max_sessions_per_client)"}`));
       if (c.up !== up) return;
       c.up = c.upReady = undefined;
-      if (c.status === "running") finish(c, "error", `gateway socket closed mid-turn: ${e.code} ${e.reason}`);
+      // Never opened: startTurn's catch fails the turn. Opened: the gateway may still run it (a closed socket doesn't
+      // cancel a turn) or it died with a ZeroClaw restart; recover() finds out.
+      if (c.status === "running" && !c.finishing && opened) detach(c, `gateway socket closed mid-turn: ${e.code} ${e.reason}`.trim());
     };
   });
   c.upReady.catch(() => {});
@@ -318,7 +344,10 @@ function onEvent(c: Conv, m: GatewayEvent) {
     return emit(c.id, m);
   }
   record(c, m);
-  if (m.type === "tool_call" || m.type === "tool_result") c.tools.push(m);
+  if (m.type === "tool_call" || m.type === "tool_result") {
+    c.tools.push(m);
+    keepStep(c, m);
+  }
   if (m.type === "tool_call" || m.type === "approval_request") c.pending = (c.pending ?? 0) + 1;
   if (m.type === "tool_result" || m.type === "sop_approval_result") c.pending = Math.max(0, (c.pending ?? 0) - 1);
   if (m.type === "done") {
@@ -341,6 +370,9 @@ function onEvent(c: Conv, m: GatewayEvent) {
 async function finish(c: Conv, status: ConvStatus, error: string | null = null, aborted = false) {
   if (c.status !== "running" || c.finishing) return;
   c.finishing = true;
+  c.recovering = false;
+  c.rec = undefined;
+  dropInflight(c.id);
   const failed = aborted || status === "error";
   const tools = c.tools;
   c.tools = [];
@@ -401,13 +433,111 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   if (!session(c.id)?.message_count) state.previews[c.id] ??= previewText(text).slice(0, 200);
   save();
   record(c, fork ? { type: "user", content: text, fork: fork.ref } : { type: "user", content: text });
+  const sent = fork ? forkPrompt(fork.ref, fork.context, text) : text;
+  c.rec = { id: c.id, text, sent, ...(fork && { fork: fork.ref }), startedAt: c.startedAt, events: [], resent: false };
+  writeInflight(c.rec);
   broadcastList();
   try {
     const up = await upstream(c);
-    up.send(JSON.stringify({ type: "message", content: fork ? forkPrompt(fork.ref, fork.context, text) : text }));
+    up.send(JSON.stringify({ type: "message", content: sent }));
   } catch (e) {
     record(c, { type: "error", message: msg(e) });
     finish(c, "error", msg(e));
+  }
+}
+
+// ---------- restarts mid-turn ----------
+// someclaw restart: the gateway keeps running the turn (a closed /ws/chat socket doesn't cancel it) and stores the
+// reply; the broker reattaches and files the steps it saw before the restart. Steps after it are lost (the gateway
+// sends them only to the socket that started the turn). ZeroClaw restart: the turn is gone, the gateway stored nothing
+// of it: resent once with the steps it already ran (resendPrompt).
+
+const RECOVER_POLL_MS = 3_000;
+const RECOVER_GIVE_UP_MS = 30 * 60_000; // gateway unreachable this long: stop waiting
+const STEP_TYPES = new Set(["tool_call", "tool_result"]);
+
+function keepStep(c: Conv, e: GatewayEvent) {
+  if (!c.rec) return;
+  c.rec.events.push(e);
+  writeInflight(c.rec);
+}
+
+function detach(c: Conv, reason: string) {
+  if (c.recovering || !c.rec) {
+    if (!c.rec) finish(c, "error", reason);
+    return;
+  }
+  console.error(`broker: ${c.id}: ${reason}, recovering`);
+  c.recovering = true;
+  record(c, { type: "notice", message: `${reason}: checking whether the turn survived` });
+  recover(c);
+}
+
+async function recover(c: Conv) {
+  const rec = c.rec!;
+  const since = Date.now();
+  let lastError = "";
+  while (c.recovering && c.rec === rec) {
+    try {
+      if (!state.token) throw new Error("no gateway token");
+      const { daemon_started_at } = await api<{ daemon_started_at: string }>(state.token, "/api/status");
+      if (parseTime(daemon_started_at) > rec.startedAt) return await restarted(c, rec, daemon_started_at);
+      const running = await api<{ sessions: { session_id: string }[] }>(state.token, "/api/sessions/running");
+      if (!running.sessions.some((s) => s.session_id === c.id)) return await reattached(c);
+    } catch (e) {
+      if (msg(e) !== lastError) console.error(`broker: recover ${c.id}: ${(lastError = msg(e))}`);
+      if (Date.now() - since > RECOVER_GIVE_UP_MS) return finish(c, "error", `turn lost: gateway unreachable for 30 min (${lastError})`);
+    }
+    await Bun.sleep(RECOVER_POLL_MS);
+  }
+}
+
+/** Gateway finished the turn without us: its reply is in the history (finish() reads it and files the steps). */
+async function reattached(c: Conv) {
+  c.recovering = false;
+  console.log(`broker: ${c.id}: turn ended on the gateway, reattached`);
+  const h = await history(c.id).catch(() => null);
+  const replied = h?.at(-1)?.role === "assistant" && parseTime(h.at(-1)!.created_at) >= (c.rec?.startedAt ?? 0);
+  if (replied) return finish(c, "idle");
+  finish(c, "error", "turn ended without a reply while someclaw wasn't connected to it (aborted elsewhere or failed)");
+}
+
+async function restarted(c: Conv, rec: Inflight, at: string) {
+  if (rec.resent) return finish(c, "error", `cut off by a ZeroClaw restart (${at}) again: resent once already, not again`);
+  c.recovering = false;
+  const { content, steps } = resendPrompt(rec.sent, rec.events, at);
+  console.log(`broker: ${c.id}: ZeroClaw restarted at ${at} mid-turn, resending with ${steps} steps`);
+  rec.resent = true;
+  rec.startedAt = Date.now();
+  writeInflight(rec);
+  record(c, { type: "notice", message: `ZeroClaw restarted (${at}) and killed the turn: resent with the ${steps} steps it already ran` });
+  c.lastFrameAt = Date.now();
+  c.pending = 0;
+  c.done = undefined;
+  dropUpstream(c, "resend");
+  try {
+    const up = await upstream(c);
+    up.send(JSON.stringify({ type: "message", content }));
+  } catch (e) {
+    record(c, { type: "error", message: msg(e) });
+    finish(c, "error", `resend after restart: ${msg(e)}`);
+  }
+}
+
+/** Turns that were running when someclaw stopped. */
+function recoverInflight() {
+  for (const rec of readInflight()) {
+    const c = conv(rec.id);
+    c.status = "running";
+    c.rec = rec;
+    c.startedAt = rec.startedAt;
+    c.lastFrameAt = Date.now();
+    c.tools = rec.events.filter((e) => STEP_TYPES.has(e.type));
+    c.turn = [{ type: "user", content: rec.text, ...(rec.fork && { fork: rec.fork }) }, ...rec.events.map((e) => ({ ...e }))];
+    c.recovering = true;
+    c.turn.push({ type: "notice", message: "someclaw restarted mid-turn: reattaching (steps after the restart aren't shown)" });
+    console.log(`broker: ${rec.id}: was running when someclaw stopped (${rec.events.length} steps), recovering`);
+    recover(c);
   }
 }
 
@@ -423,7 +553,7 @@ const QUIET_FRAMES = new Set(["session_start", "connected", "connect"]);
 setInterval(() => {
   const now = Date.now();
   for (const c of convs.values())
-    if (c.status === "running" && !c.finishing && !c.pending && now - (c.lastFrameAt ?? now) > SILENCE_MS) stalled(c);
+    if (c.status === "running" && !c.finishing && !c.recovering && !c.pending && now - (c.lastFrameAt ?? now) > SILENCE_MS) stalled(c);
 }, Math.min(15_000, SILENCE_MS / 2));
 
 async function stalled(c: Conv) {
@@ -522,6 +652,7 @@ function cancelResume(id: string) {
 }
 
 for (const id of Object.keys(state.resume)) armResume(id);
+recoverInflight();
 
 // Failed titles retry after TITLE_RETRY_MS (e.g. titler agent missing until zeroclaw-config is merged), not every poll.
 const TITLE_RETRY_MS = 10 * 60_000;
@@ -631,9 +762,11 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
         cancelResume(m.id); // a new message replaces the pending resume
         return startTurn(c, text);
       }
+      if (c.recovering) return fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
       try {
         const up = await upstream(c);
         record(c, { type: "user", content: text, steer: true });
+        keepStep(c, { type: "user", content: text, steer: true });
         up.send(JSON.stringify({ type: "message", content: text }));
       } catch (e) {
         fail(`steer: ${msg(e)}`);
@@ -651,14 +784,21 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       return startTurn(conv(m.id), text, { ref: { id: m.from, channel: src.channel_id, messages: context.messages }, context: context.text });
     }
 
-    case "abort":
+    case "abort": {
       if (cancelResume(m.id)) return broadcastList();
+      const c = convs.get(m.id);
+      if (c?.recovering) {
+        // No socket to get the aborted frame on: end it here. The gateway abort is for a turn it still runs.
+        record(c, { type: "aborted" });
+        finish(c, "idle", null, true);
+      }
       try {
         await api(ws.data.token, `/api/sessions/${encodeURIComponent(m.id)}/abort`, { method: "POST" });
       } catch (e) {
-        fail(`abort: ${msg(e)}`);
+        if (!c?.recovering) fail(`abort: ${msg(e)}`);
       }
       return;
+    }
 
     case "archive":
       console.log(`broker: ${m.archived ? "archive" : "unarchive"} ${m.id} (${ws.data.ua})`);

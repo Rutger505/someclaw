@@ -47,7 +47,12 @@ export type HistoryMessage = {
   created_at: string;
   /** User message that continued a channel session (content is then only what the user typed). */
   fork?: ForkRef;
+  /** Resent by the broker after a ZeroClaw restart cut its first try off (content is then only what the user typed). */
+  resent?: Resent;
 };
+
+/** steps: tool calls of the cut-off try passed along as context; restarted: ZeroClaw's new start time. */
+export type Resent = { steps: number; restarted: string };
 
 /** Tool events of a finished turn, shown before history[at] (its assistant reply). Gateway /ws/chat history has no tools. */
 export type ToolLog = { at: number; events: GatewayEvent[] };
@@ -155,4 +160,43 @@ export function plainText(m: HistoryMessage, tools = true): string | null {
     return `[result: ${clip((r?.output ?? m.content).trim(), 500)}]`;
   }
   return m.content;
+}
+
+// ---------- resend after a ZeroClaw restart ----------
+// A restart kills the running turn and the gateway stores nothing of it (not even the prompt). The broker resends the
+// prompt once, with the steps the cut-off try already ran, so it continues instead of redoing them. The UI hides the block.
+
+const CUT_RE = /^<cut-off-turn steps="(\d+)" restarted="([^"]*)">[\s\S]*?<\/cut-off-turn>\n\n/;
+const CUT_CLOSE = "</cut-off-turn>";
+const RESEND_MAX_ARG = 1_500;
+const RESEND_MAX_OUTPUT = 2_000;
+const RESEND_MAX_CHARS = 40_000;
+
+export function resendPrompt(sent: string, events: GatewayEvent[], restarted: string): { content: string; steps: number } {
+  const lines: string[] = [];
+  let steps = 0;
+  for (const e of events) {
+    if (e.type === "tool_call") {
+      steps++;
+      const args = typeof e.args === "string" ? e.args : JSON.stringify(e.args ?? {});
+      lines.push(`Tool call ${String(e.name ?? "?")}: ${clip(args, RESEND_MAX_ARG)}`);
+    } else if (e.type === "tool_result") lines.push(`Result: ${clip(String(e.output ?? "").trim(), RESEND_MAX_OUTPUT)}`);
+    else if (e.type === "user") lines.push(`User, mid-turn: ${String(e.content ?? "")}`);
+  }
+  // oldest dropped first
+  let kept = lines;
+  let chars = lines.reduce((n, l) => n + l.length + 1, 0);
+  while (kept.length && chars > RESEND_MAX_CHARS) chars -= kept.shift()!.length + 1;
+  const dropped = lines.length - kept.length;
+  const intro = steps
+    ? `[someclaw] Your previous try at the message below was cut off: ZeroClaw restarted (${restarted}) while it ran, and nothing of it was stored. These steps already ran (outputs shortened). Don't redo them blindly: check what's done if unsure, then continue and finish the reply. A tool call without a result was cut off mid-run: check whether it took effect.`
+    : `[someclaw] Your previous try at the message below was cut off: ZeroClaw restarted (${restarted}) before it ran any tool. Answer it now.`;
+  const body = [intro, ...(dropped ? [`[${dropped} earlier lines omitted]`] : []), ...kept].join("\n\n").replaceAll(CUT_CLOSE, "");
+  return { content: `<cut-off-turn steps="${steps}" restarted="${restarted}">\n${body}\n${CUT_CLOSE}\n\n${sent}`, steps };
+}
+
+export function parseResent(content: string): { text: string; resent?: Resent } {
+  const m = CUT_RE.exec(content);
+  if (!m) return { text: content };
+  return { text: content.slice(m[0].length), resent: { steps: Number(m[1]), restarted: m[2]! } };
 }

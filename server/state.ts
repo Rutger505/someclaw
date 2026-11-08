@@ -1,10 +1,11 @@
 // someclaw's own state (the gateway has no archive/tool history). JSON files in SOMECLAW_STATE_DIR, written atomically.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { Resume, ToolLog, TurnModel } from "../shared/protocol";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import type { ForkRef, GatewayEvent, Resume, ToolLog, TurnModel } from "../shared/protocol";
 
 const DIR = process.env.SOMECLAW_STATE_DIR ?? `${process.env.HOME}/.local/state/someclaw`;
 mkdirSync(`${DIR}/tools`, { recursive: true, mode: 0o700 });
 mkdirSync(`${DIR}/turns`, { recursive: true, mode: 0o700 });
+mkdirSync(`${DIR}/inflight`, { recursive: true, mode: 0o700 });
 
 function read<T>(file: string, fallback: T): T {
   try {
@@ -78,3 +79,27 @@ export function truncateTurns(id: string, keep: number) {
   const kept = turns.filter((t) => t.at < keep);
   if (kept.length !== turns.length) write(turnFile(id), JSON.stringify(kept));
 }
+
+/** Running turn started here, written as its steps come in: survives a someclaw restart (reattach) and a ZeroClaw
+ * restart (resend). Deleted when the turn finishes. */
+export type Inflight = {
+  id: string;
+  /** What the user typed (shown) and what went to the gateway (fork context included). */
+  text: string;
+  sent: string;
+  fork?: ForkRef;
+  /** ms epoch the gateway turn started (the resend's, once resent). */
+  startedAt: number;
+  /** tool_call, tool_result and steer messages so far. */
+  events: GatewayEvent[];
+  /** Already resent once after a restart: a second cut-off isn't resent. */
+  resent: boolean;
+};
+const inflightFile = (id: string) => `${DIR}/inflight/${encodeURIComponent(id)}.json`;
+export const readInflight = (): Inflight[] =>
+  readdirSync(`${DIR}/inflight`)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => read<Inflight | null>(`${DIR}/inflight/${f}`, null))
+    .filter((r): r is Inflight => !!r?.id);
+export const writeInflight = (r: Inflight) => write(inflightFile(r.id), JSON.stringify(r));
+export const dropInflight = (id: string) => rmSync(inflightFile(id), { force: true });
