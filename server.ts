@@ -3,6 +3,7 @@
 import { watch } from "node:fs";
 import { authorize, websocket, type Client } from "./server/broker";
 import { tokenValid } from "./server/gateway";
+import { upload } from "./server/uploads";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
@@ -66,6 +67,8 @@ Bun.serve<Client, never>({
       console.log(`reload: gateway answered ${res.status}`);
       return new Response(await res.text(), { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "text/plain" } });
     }
+
+    if (url.pathname === "/someclaw/upload" && req.method === "POST") return upload(req);
 
     if (url.pathname === "/someclaw/version") {
       return new Response(version, { headers: { "cache-control": "no-store" } });

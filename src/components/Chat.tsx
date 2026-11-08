@@ -1,7 +1,9 @@
-import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, GitBranch, Lock, PanelLeft, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Resume, TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "../lib/broker";
+import { uploadFile } from "../lib/gateway";
 import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
 import { convTitle, IconButton, Kbd, StatusDot } from "./Sidebar";
@@ -25,8 +27,14 @@ type Props = {
 /** One content width for messages and composer, so their edges line up. */
 const COLUMN = "mx-auto w-full max-w-3xl px-6";
 
+/** A composer attachment: uploads as soon as it's added, sent as a media marker once done. */
+type Pending = { key: string; name: string; image: boolean; file?: Attachment; error?: string };
+
 export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar, onOpen }, ref) {
   const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<Pending[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -59,6 +67,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     setDraft(saved);
     setUnlocked(!!saved); // a kept draft means it was unlocked on purpose
     setRenaming(null);
+    setFiles([]);
     stick.current = true;
     input.current?.focus();
   }, [id]);
@@ -72,11 +81,28 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     if (stick.current && log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [items]);
 
+  const uploading = files.some((f) => !f.file && !f.error);
+  const failed = files.some((f) => f.error);
+  const canSend = (!!draft.trim() || files.length > 0) && !uploading && !failed;
+
+  const addFiles = (list: FileList | File[]) => {
+    for (const f of Array.from(list)) {
+      const key = crypto.randomUUID();
+      setFiles((fs) => [...fs, { key, name: f.name, image: f.type.startsWith("image/") }]);
+      uploadFile(f).then(
+        (file) => setFiles((fs) => fs.map((p) => (p.key === key ? { ...p, file, image: file.image } : p))),
+        (e) => setFiles((fs) => fs.map((p) => (p.key === key ? { ...p, error: (e as Error).message } : p))),
+      );
+    }
+    input.current?.focus();
+  };
+
   /** Idle: starts a turn. While rocky works: steers it (no queue). Channel sessions: forks into a new conversation. */
   const submit = () => {
-    const text = draft.trim();
-    if (!text) return;
+    if (!canSend) return;
+    const text = withAttachments(draft.trim(), files.map((f) => f.file!));
     setDraft("");
+    setFiles([]);
     stick.current = true;
     if (!readOnly) return send({ type: "send", id, text });
     const fork = crypto.randomUUID();
@@ -167,17 +193,53 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           e.preventDefault();
           submit();
         }}
+        onDragOver={(e) => {
+          if (locked || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+        }}
+        onDrop={(e) => {
+          setDragging(false);
+          if (locked || !e.dataTransfer.files.length) return;
+          e.preventDefault();
+          addFiles(e.dataTransfer.files);
+        }}
       >
         {locked ? (
           <Locked channel={conv?.channel ?? "channel"} onUnlock={() => setUnlocked(true)} />
         ) : (
-          <div className="rounded-2xl border border-line-strong bg-surface shadow-lg shadow-black/20 transition-colors focus-within:border-accent-dim">
+          <div className={`rounded-2xl border bg-surface shadow-lg shadow-black/20 transition-colors focus-within:border-accent-dim ${dragging ? "border-accent" : "border-line-strong"}`}>
+            {files.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+                {files.map((f) => (
+                  <span
+                    key={f.key}
+                    title={f.error ?? f.file?.path ?? "uploading…"}
+                    className={`flex max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-xs ring-1 ${f.error ? "bg-err/10 text-err ring-err/40" : "bg-elevated text-fg-2 ring-line"}`}
+                  >
+                    {f.error ? <CircleAlert size={13} /> : !f.file ? <Loader size={13} className="animate-spin" /> : f.image ? <Image size={13} /> : <FileText size={13} />}
+                    <span className="min-w-0 truncate">{f.error ?? f.name}</span>
+                    <button type="button" onClick={() => setFiles((fs) => fs.filter((p) => p.key !== f.key))} title="Remove" className="text-faint hover:text-fg">
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <textarea
               ref={input}
               autoFocus
               rows={1}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onPaste={(e) => {
+                if (!e.clipboardData.files.length) return;
+                e.preventDefault();
+                addFiles(e.clipboardData.files);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -199,6 +261,24 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                     : "Enter to send · Shift+Enter new line"}
               </span>
               <div className="ml-auto flex items-center gap-1.5">
+                <input
+                  ref={picker}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files) addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => picker.current?.click()}
+                  title="Attach files (or paste / drop them)"
+                  className="grid size-8 place-items-center rounded-full text-muted transition-colors hover:bg-elevated hover:text-fg"
+                >
+                  <Paperclip size={16} />
+                </button>
                 {running && (
                   <button
                     type="button"
@@ -211,7 +291,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                 )}
                 <button
                   title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : "Send (Enter)"}
-                  disabled={!draft.trim()}
+                  disabled={!canSend}
                   className="grid size-8 place-items-center rounded-full bg-accent text-base transition-colors hover:bg-accent-light disabled:bg-elevated disabled:text-faint"
                 >
                   {readOnly ? <GitBranch size={16} strokeWidth={2.5} /> : running ? <CornerDownRight size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
@@ -253,7 +333,8 @@ type Reset = { below: number; run: () => void };
 
 function Row({ item, reset }: { item: Item; reset?: Reset }) {
   switch (item.kind) {
-    case "user":
+    case "user": {
+      const { files, text } = splitAttachments(item.text);
       return (
         <div className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
           {item.steer && (
@@ -266,10 +347,21 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
               <GitBranch size={12} /> continued from {item.fork.channel} · {item.fork.messages} messages as context
             </a>
           )}
-          <div className="max-w-full rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap wrap-anywhere ring-1 ring-line">{item.text}</div>
+          {files.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {files.map((f) => (
+                <span key={f.path} title={f.path} className="flex max-w-full items-center gap-1.5 rounded-lg bg-elevated px-2 py-1 text-xs text-fg-2 ring-1 ring-line">
+                  {f.image ? <Image size={13} /> : <FileText size={13} />}
+                  <span className="min-w-0 truncate">{f.name}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {text && <div className="max-w-full rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap wrap-anywhere ring-1 ring-line">{text}</div>}
           <Actions text={item.text} reset={reset} />
         </div>
       );
+    }
     case "agent":
       return (
         <div className="group max-w-full">

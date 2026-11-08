@@ -6,6 +6,7 @@ import { appendTools, appendTurn, readTools, readTurns, save, state, truncateToo
 import { clearDeadTurns, truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { rateLimitReset } from "./usage";
+import { previewText } from "../shared/attachments";
 import {
   RESUME_TEXT,
   forkPrompt,
@@ -203,7 +204,7 @@ function backfillPreviews() {
       .then((h) => {
         const first = h.find((m) => m.role === "user");
         if (!first) return;
-        state.previews[id] = first.content.slice(0, 200);
+        state.previews[id] = previewText(first.content).slice(0, 200);
         save();
         broadcastList();
       })
@@ -397,7 +398,7 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   c.lastFrameAt = c.startedAt = Date.now();
   c.doneAt = undefined;
   c.pending = 0;
-  if (!session(c.id)?.message_count) state.previews[c.id] ??= text.slice(0, 200);
+  if (!session(c.id)?.message_count) state.previews[c.id] ??= previewText(text).slice(0, 200);
   save();
   record(c, fork ? { type: "user", content: text, fork: fork.ref } : { type: "user", content: text });
   broadcastList();

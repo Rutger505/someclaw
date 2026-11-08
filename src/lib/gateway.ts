@@ -1,4 +1,6 @@
 // Gateway auth: pairing token in localStorage (same key as the official dashboard, but this is its own origin).
+import type { Attachment } from "../../shared/attachments";
+
 const KEY = "zeroclaw_token";
 
 export const getToken = () => localStorage.getItem(KEY);
@@ -33,4 +35,15 @@ export async function tokenValid() {
   const res = await fetch("/api/status", { headers: { authorization: `Bearer ${getToken()}` } });
   if (res.status === 401) return false;
   return true;
+}
+
+/** POST /someclaw/upload: saves the file on the VM, returns the path to put in a media marker. */
+export async function uploadFile(f: File): Promise<Attachment> {
+  const res = await fetch(`/someclaw/upload?name=${encodeURIComponent(f.name)}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${getToken()}`, "content-type": f.type || "application/octet-stream" },
+    body: f,
+  });
+  if (!res.ok) throw new HttpError(res.status, `upload ${f.name}: ${res.status} ${await res.text()}`);
+  return res.json();
 }

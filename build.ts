@@ -1,5 +1,5 @@
 // Bundles src/index.html (React + Tailwind) into dist/. The server only serves dist/, so a UI build never restarts it.
-// --watch rebuilds on every src/ change (dev).
+// --watch rebuilds on every src/ or shared/ change (dev).
 import tailwind from "bun-plugin-tailwind";
 import { rmSync, watch } from "node:fs";
 
@@ -30,8 +30,10 @@ async function build() {
 const ok = await build();
 if (process.argv.includes("--watch")) {
   let timer: Timer | undefined;
-  watch(`${root}/src`, { recursive: true }, () => {
-    clearTimeout(timer);
-    timer = setTimeout(build, 100);
-  });
+  // shared/ is bundled into the UI too.
+  for (const dir of ["src", "shared"])
+    watch(`${root}/${dir}`, { recursive: true }, () => {
+      clearTimeout(timer);
+      timer = setTimeout(build, 100);
+    });
 } else if (!ok) process.exit(1);
