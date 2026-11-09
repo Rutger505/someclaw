@@ -4,6 +4,7 @@ import { watch } from "node:fs";
 import { authorize, websocket, type Client } from "./server/broker";
 import { tokenValid } from "./server/gateway";
 import { upload } from "./server/uploads";
+import { flush } from "./server/state";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
@@ -29,6 +30,9 @@ watch(import.meta.dir, (_, file) => {
     for (const c of listeners) send(c, `data: ${v}\n\n`);
   }, 150);
 });
+// Restart (deploy): exit right away, but keep the state save that's still in its debounce.
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { flush(); process.exit(0); });
+
 // Keeps proxies/NAT from dropping idle streams; one tiny frame per 30 s.
 setInterval(() => { for (const c of listeners) send(c, ": ping\n\n"); }, 30_000);
 
@@ -78,7 +82,7 @@ Bun.serve<Client, never>({
       server.timeout(req, 0); // long-lived stream: no idle timeout
       let ctrl: ReadableStreamDefaultController;
       const body = new ReadableStream({
-        start(c) { ctrl = c; listeners.add(c); send(c, `retry: 3000\ndata: ${version}\n\n`); },
+        start(c) { ctrl = c; listeners.add(c); send(c, `retry: 250\ndata: ${version}\n\n`); },
         cancel() { listeners.delete(ctrl); },
       });
       return new Response(body, {

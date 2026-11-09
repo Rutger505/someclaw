@@ -51,7 +51,13 @@ for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[
 let timer: Timer | undefined;
 export function save() {
   clearTimeout(timer);
-  timer = setTimeout(() => write(FILE, JSON.stringify(state, null, 1)), 200);
+  timer = setTimeout(flush, 200);
+}
+/** Writes a pending save now (on SIGTERM: a restart within the 200 ms debounce would lose it). */
+export function flush() {
+  clearTimeout(timer);
+  timer = undefined;
+  write(FILE, JSON.stringify(state, null, 1));
 }
 
 // Tool logs per conversation, one file each (outputs can be large).

@@ -8,13 +8,22 @@ export function useVersionReload(idle: boolean) {
   idleRef.current = idle;
 
   useEffect(() => {
-    const es = new EventSource("/someclaw/events");
-    es.onmessage = (e) => {
-      loaded.current ??= e.data;
-      if (e.data !== loaded.current) pending.current = true;
-      if (pending.current && idleRef.current) location.reload();
+    let es: EventSource;
+    let retry: Timer | undefined;
+    const open = () => {
+      es = new EventSource("/someclaw/events");
+      es.onmessage = (e) => {
+        loaded.current ??= e.data;
+        if (e.data !== loaded.current) pending.current = true;
+        if (pending.current && idleRef.current) location.reload();
+      };
+      // A reconnect that hits the proxy's 502 mid-restart closes EventSource for good: reopen it ourselves.
+      es.onerror = () => {
+        if (es.readyState === EventSource.CLOSED) retry = setTimeout(open, 500);
+      };
     };
-    return () => es.close();
+    open();
+    return () => { clearTimeout(retry); es.close(); };
   }, []);
 
   useEffect(() => {

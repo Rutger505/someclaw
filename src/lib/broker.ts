@@ -24,6 +24,8 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
   useEffect(() => {
     let stopped = false;
     let retry: Timer | undefined;
+    // someclaw restarts in ~70 ms (deploy): retry fast at first, back off if it stays down.
+    let attempt = 0;
     const connect = () => {
       setLink("connecting");
       const q = new URLSearchParams({ token: getToken() ?? "" });
@@ -31,6 +33,7 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
       ws.current = sock;
       sock.onopen = () => {
         setLink("open");
+        attempt = 0;
         // Reconnected (e.g. someclaw deploy restart): the close errors are resolved.
         setErrors((x) => x.filter((e) => !e.link));
         sock.send(JSON.stringify({ type: "subscribe", id: openRef.current } satisfies ClientMsg));
@@ -41,8 +44,9 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
         // The upgrade's 401 is invisible here: ask over REST.
         const auth = await fetch("/api/status", { headers: { authorization: `Bearer ${getToken()}` } }).catch(() => null);
         if (auth?.status === 401 || e.code === 4001) return onUnauthorized();
-        setErrors((x) => [...x, { at: Date.now(), message: `broker socket closed ${e.code} ${e.reason}, reconnecting`, link: true }]);
-        retry = setTimeout(connect, 2000);
+        // One link error per outage, not one per fast retry.
+        setErrors((x) => [...x.filter((y) => !y.link), { at: Date.now(), message: `broker socket closed ${e.code} ${e.reason}, reconnecting`, link: true }]);
+        retry = setTimeout(connect, attempt++ < 40 ? 250 : 2000);
       };
       sock.onmessage = (e) => {
         const m: ServerMsg = JSON.parse(e.data);
