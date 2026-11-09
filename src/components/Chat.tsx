@@ -428,14 +428,15 @@ function Row({ item, reset, onAnswer }: { item: Item; reset?: Reset; onAnswer: (
   }
 }
 
-/** rocky's ask_user question: choices as buttons; a free answer goes through the composer (broker routes it here). */
+/** rocky's ask_user question: choices as buttons + its own answer field (the composer answers it too; broker routes it here). */
 function Ask({ item, onAnswer }: { item: Extract<Item, { kind: "ask" }>; onAnswer: (requestId: string, answer: string) => void }) {
+  const [text, setText] = useState("");
+  const submit = () => text.trim() && onAnswer(item.requestId, text.trim());
   return (
     <div className={`rounded-xl border px-4 py-3 ${item.open ? "border-accent-dim bg-accent-glow" : "border-line bg-surface"}`}>
       <p className="mb-1 flex items-center gap-1.5 text-xs text-muted">
         <CircleHelp size={13} className={item.open ? "text-accent" : ""} />
         <span className="font-medium text-fg-2">rocky asks</span>
-        {item.open && <span>· answer below{item.choices.length > 0 && " or pick one"}</span>}
       </p>
       <Markdown text={item.question} />
       {item.open && item.choices.length > 0 && (
@@ -451,6 +452,26 @@ function Ask({ item, onAnswer }: { item: Extract<Item, { kind: "ask" }>; onAnswe
             </button>
           ))}
         </div>
+      )}
+      {item.open && (
+        <form
+          className="mt-3 flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <input
+            autoFocus={item.choices.length === 0}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={item.choices.length > 0 ? "Or type an answer…" : "Your answer…"}
+            className="h-9 min-w-0 flex-1 rounded-lg border border-line-strong bg-input px-3 text-sm outline-none focus:border-accent"
+          />
+          <IconButton title="Send answer" aria-label="Send answer" type="submit" disabled={!text.trim()}>
+            <ArrowUp size={16} />
+          </IconButton>
+        </form>
       )}
       {item.answer !== undefined && (
         <p className="mt-2 flex items-start gap-1.5 text-sm text-fg">
