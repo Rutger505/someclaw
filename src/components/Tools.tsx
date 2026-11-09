@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Wrench, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Tool } from "../lib/items";
 
 const ROW = 24; // px, every row is h-6 so the ticker can scroll by whole rows
@@ -16,17 +16,22 @@ const brief = (args: unknown) => {
 
 /**
  * A run of tool calls. Collapsed: a 3-row window that slides up as calls arrive (no manual scroll),
- * latest at the bottom. Click to expand: every call, each opening to args + output.
+ * latest at the bottom. Clicking a row expands the group with that call opened; the header toggles
+ * the group. Expanded: every call, each opening to args + output.
  */
 export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
   const [open, setOpen] = useState(false);
+  const [focus, setFocus] = useState<number | null>(null);
   const running = tools.filter((t) => t.output === undefined).length;
   const hidden = Math.max(0, tools.length - VISIBLE);
 
   return (
     <div>
       <button
-        onClick={() => setOpen((x) => !x)}
+        onClick={() => {
+          setFocus(null);
+          setOpen((x) => !x);
+        }}
         className="flex h-8 items-center gap-2 text-left text-xs text-muted transition-colors hover:text-fg-2"
       >
         <Wrench size={13} />
@@ -40,14 +45,13 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
       {open ? (
         <div className="max-h-[32rem] overflow-y-auto font-mono text-xs">
           {tools.map((t, i) => (
-            <ToolDetails key={t.id || i} t={t} live={live} />
+            <ToolDetails key={t.id || i} t={t} live={live} focused={focus === i} />
           ))}
         </div>
       ) : (
         <div
-          onClick={() => setOpen(true)}
           style={{ height: Math.min(tools.length, VISIBLE) * ROW }}
-          className={`cursor-pointer overflow-hidden font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
+          className={`overflow-hidden font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
             hidden ? "mask-t-from-60%" : ""
           }`}
         >
@@ -56,7 +60,15 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
             className="transition-transform duration-300 ease-out motion-reduce:transition-none"
           >
             {tools.map((t, i) => (
-              <ToolLine key={t.id || i} t={t} live={live} />
+              <ToolLine
+                key={t.id || i}
+                t={t}
+                live={live}
+                onClick={() => {
+                  setFocus(i);
+                  setOpen(true);
+                }}
+              />
             ))}
           </div>
         </div>
@@ -71,19 +83,30 @@ function Status({ t, live }: { t: Tool; live: boolean }) {
   return <span className="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-warn border-t-transparent" />;
 }
 
-function ToolLine({ t, live }: { t: Tool; live: boolean }) {
+function ToolLine({ t, live, onClick }: { t: Tool; live: boolean; onClick: () => void }) {
   return (
-    <div className="flex h-6 items-center gap-2 text-fg-2 transition-opacity duration-300 starting:opacity-0">
+    <button
+      onClick={onClick}
+      title="Open this call"
+      className="-mx-2 flex h-6 w-[calc(100%+1rem)] cursor-pointer items-center gap-2 rounded-md px-2 text-left text-fg-2 transition-opacity duration-300 hover:bg-elevated hover:text-fg starting:opacity-0"
+    >
       <Status t={t} live={live} />
       <span className="shrink-0 text-accent-light">{t.name}</span>
       <span className="truncate text-faint">{brief(t.args)}</span>
-    </div>
+    </button>
   );
 }
 
-function ToolDetails({ t, live }: { t: Tool; live: boolean }) {
+function ToolDetails({ t, live, focused }: { t: Tool; live: boolean; focused: boolean }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!focused || !ref.current) return;
+    ref.current.open = true;
+    ref.current.scrollIntoView({ block: "nearest" });
+  }, [focused]);
+
   return (
-    <details className="group">
+    <details ref={ref} className="group">
       <summary className="-mx-2 flex h-6 cursor-pointer list-none items-center gap-2 rounded-md px-2 text-fg-2 hover:bg-elevated hover:text-fg">
         <Status t={t} live={live} />
         <span className="shrink-0 text-accent-light">{t.name}</span>
