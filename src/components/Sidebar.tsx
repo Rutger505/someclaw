@@ -4,6 +4,13 @@ import type { Conversation } from "../../shared/protocol";
 import { DASHBOARD_URL } from "../App";
 import type { Link } from "../lib/broker";
 
+// Real links so Ctrl/Cmd/Shift/middle-click open a new tab/window natively; a plain click stays in-app.
+const inApp = (fn: () => void) => (e: React.MouseEvent) => {
+  if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  fn();
+};
+
 export const convTitle = (c: Conversation) => c.name ?? c.preview ?? (c.channel ? c.channel : "New conversation");
 
 /** running = pulsing amber, waiting (auto-resume after rate limit) = blue, error = red, unread = cyan, idle = nothing. */
@@ -52,14 +59,15 @@ export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchiv
       </div>
 
       <div className="px-3 pb-3">
-        <button
-          onClick={onNew}
+        <a
+          href={location.pathname}
+          onClick={inApp(onNew)}
           className="group flex h-9 w-full items-center gap-2 rounded-md border border-line-strong px-3 text-sm text-fg-2 transition-colors hover:border-accent-dim hover:bg-accent-glow hover:text-accent-light"
         >
           <Plus size={16} />
           <span>New conversation</span>
           <Kbd className="ml-auto opacity-0 transition-opacity group-hover:opacity-100">Ctrl O</Kbd>
-        </button>
+        </a>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 pb-3">
@@ -111,8 +119,9 @@ export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchiv
 
 function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | null; open: boolean; onOpen: (id: string) => void; onArchive: (id: string, archived: boolean) => void }) {
   return (
-    <div
-      onClick={() => onOpen(c.id)}
+    <a
+      href={`#${encodeURIComponent(c.id)}`}
+      onClick={inApp(() => onOpen(c.id))}
       title={c.error ?? c.titleError ?? undefined}
       className={`group relative flex h-9 cursor-pointer items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
         open ? "bg-elevated text-fg" : "text-fg-2 hover:bg-elevated/60 hover:text-fg"
@@ -130,6 +139,7 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
       )}
       <button
         onClick={(e) => {
+          e.preventDefault();
           e.stopPropagation();
           onArchive(c.id, !c.archived);
         }}
@@ -138,7 +148,7 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
       >
         {c.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
       </button>
-    </div>
+    </a>
   );
 }
 
