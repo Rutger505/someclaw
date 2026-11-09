@@ -49,7 +49,12 @@ export type HistoryMessage = {
   fork?: ForkRef;
   /** Resent by the broker after a ZeroClaw restart cut its first try off (content is then only what the user typed). */
   resent?: Resent;
+  /** Assistant message the broker posted with a cron job's run result (content is then only the run's output). */
+  cron?: CronRun;
 };
+
+/** A run of a cron job created in this conversation (server/cron.ts). */
+export type CronRun = { job: string; name: string | null; run: number; status: string; at: string };
 
 /** steps: tool calls of the cut-off try passed along as context; restarted: ZeroClaw's new start time. */
 export type Resent = { steps: number; restarted: string };
@@ -199,4 +204,23 @@ export function parseResent(content: string): { text: string; resent?: Resent } 
   const m = CUT_RE.exec(content);
   if (!m) return { text: content };
   return { text: content.slice(m[0].length), resent: { steps: Number(m[1]), restarted: m[2]! } };
+}
+
+// ---------- cron results ----------
+// The gateway delivers cron output only to channels (WhatsApp, ...), never back to a /ws/chat conversation. The broker
+// posts each run of a job created in a conversation into it as an assistant message, so the model sees it too.
+
+const CRON_RE = /^<cron-run job="([^"]*)" name="([^"]*)" run="(\d+)" status="([^"]*)" at="([^"]*)">\n(?:\[someclaw\][^\n]*\n\n)?([\s\S]*)\n<\/cron-run>$/;
+const attr = (s: string) => s.replace(/[<>"\n]/g, " ");
+
+export function cronMessage(r: CronRun, output: string) {
+  // The transcript has no tool calls: without this line the model doesn't know it created the job.
+  const intro = `[someclaw] Run result of cron job ${r.name ? `"${r.name}" ` : ""}(${r.job}), which you created earlier in this conversation. Posted here by someclaw when it ran; not written by you.`;
+  return `<cron-run job="${attr(r.job)}" name="${attr(r.name ?? "")}" run="${r.run}" status="${attr(r.status)}" at="${attr(r.at)}">\n${intro.replaceAll("\n", " ")}\n\n${output.replaceAll("</cron-run>", "</cron_run>")}\n</cron-run>`;
+}
+
+export function parseCron(content: string): { text: string; cron?: CronRun } {
+  const m = CRON_RE.exec(content);
+  if (!m) return { text: content };
+  return { text: m[6]!, cron: { job: m[1]!, name: m[2] || null, run: Number(m[3]), status: m[4]!, at: m[5]! } };
 }

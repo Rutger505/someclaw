@@ -41,10 +41,15 @@ export type State = {
   /** Latest valid gateway token a browser connected with: lets the broker run turns with no browser open.
    * Same trust level as the browser's localStorage; file is 0600. */
   token: string | null;
+  /** Cron jobs created in a conversation here, whose runs the broker posts into it (server/cron.ts). */
+  cron: Record<string, CronTrack>;
 };
 
+/** session: conversation the job was created in; lastRun: highest run id handled; goneSince: job first missing from the list. */
+export type CronTrack = { session: string; name: string | null; since: string; lastRun: number; goneSince?: string };
+
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, models: {}, token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, models: {}, cron: {}, token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 

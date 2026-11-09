@@ -370,6 +370,24 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
           {!item.live && <Actions text={item.text} reset={reset} turn={item.turn} />}
         </div>
       );
+    case "cron": {
+      const ok = item.cron.status === "ok";
+      const at = new Date(item.cron.at);
+      return (
+        <div className="group max-w-full">
+          <div className={`rounded-xl border px-4 py-3 ${ok ? "border-line bg-surface" : "border-err/25 bg-err/[0.06]"}`}>
+            <p className="mb-2 flex items-center gap-1.5 text-xs text-muted" title={`job ${item.cron.job} · run ${item.cron.run} · ${item.cron.at}`}>
+              <Clock size={13} className={ok ? "text-accent" : "text-err"} />
+              <span className="font-medium text-fg-2">cron{item.cron.name ? ` · ${item.cron.name}` : ""}</span>
+              <span>· {isNaN(at.getTime()) ? item.cron.at : at.toLocaleString()}</span>
+              {!ok && <span className="font-mono text-err">· {item.cron.status}</span>}
+            </p>
+            <Markdown text={item.text} />
+          </div>
+          <Actions text={item.text} reset={reset} />
+        </div>
+      );
+    }
     case "tools":
       return <ToolGroup tools={item.tools} live={!!item.live} />;
     case "plan":

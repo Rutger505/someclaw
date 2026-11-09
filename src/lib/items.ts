@@ -1,4 +1,4 @@
-import { RESUME_TEXT, assistantParts, toolResult, type ForkRef, type GatewayEvent, type Resent, type TurnModel } from "../../shared/protocol";
+import { RESUME_TEXT, assistantParts, toolResult, type CronRun, type ForkRef, type GatewayEvent, type Resent, type TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
@@ -9,6 +9,8 @@ export type Item =
   /** turn: model, tokens, duration, when known (turns finished in someclaw since this was added). */
   | { kind: "agent"; text: string; live?: boolean; at?: number; turn?: TurnModel }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
+  /** Run result of a cron job created in this conversation, posted by the broker. */
+  | { kind: "cron"; text: string; cron: CronRun; at: number }
   /** TodoWrite plan (gateway "plan" event); a newer one in the same turn replaces it. */
   | { kind: "plan"; entries: PlanEntry[]; live?: boolean }
   | { kind: "meta"; text: string; error?: boolean };
@@ -83,6 +85,7 @@ export function buildItems(s: Snapshot): Item[] {
   s.history.forEach((m, i) => {
     toolsAt(i);
     if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork, resent: m.resent, at: i });
+    else if (m.role === "assistant" && m.cron) items.push({ kind: "cron", text: m.content, cron: m.cron, at: i });
     else if (m.role === "assistant") {
       // Channel sessions: tool-using turns are stored as native JSON (text + tool_calls), results as role "tool".
       const { text, calls } = assistantParts(m.content);

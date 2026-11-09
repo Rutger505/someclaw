@@ -18,11 +18,13 @@ import {
 } from "./state";
 import { clearDeadTurns, parseTime, truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
+import { pollCronNow, startCronPoller, trackCron } from "./cron";
 import { rateLimitReset } from "./usage";
 import { previewText } from "../shared/attachments";
 import {
   RESUME_TEXT,
   forkPrompt,
+  parseCron,
   parseFork,
   parseResent,
   resendPrompt,
@@ -256,6 +258,10 @@ async function history(id: string): Promise<HistoryMessage[]> {
   if (!state.token) throw new Error("no gateway token");
   const res = await api<{ messages: HistoryMessage[] }>(state.token, `/api/sessions/${encodeURIComponent(id)}/messages`);
   return res.messages.map((m) => {
+    if (m.role === "assistant") {
+      const { text, cron } = parseCron(m.content);
+      return cron ? { ...m, content: text, cron } : m;
+    }
     if (m.role !== "user") return m;
     const { text: content, resent } = parseResent(stripDatePrefix(m.content));
     const { text, fork } = parseFork(content);
@@ -347,6 +353,8 @@ function closeWhenIdle(c: Conv) {
 
 function onEvent(c: Conv, m: GatewayEvent) {
   if (m.type === "session_start" || m.type === "thinking") return;
+  // Broadcast to every open gateway socket, persisted nowhere: only a hint that a run just finished.
+  if (m.type === "cron_result") return pollCronNow();
   if (c.status !== "running" || c.finishing) return console.warn(`broker: ${m.type} for idle ${c.id}, dropped`);
   if (m.type === "chunk_reset") {
     c.turn = c.turn.filter((e) => e.type !== "chunk");
@@ -356,6 +364,7 @@ function onEvent(c: Conv, m: GatewayEvent) {
   if (STEP_TYPES.has(m.type)) {
     c.tools.push(m);
     keepStep(c, m);
+    if (m.type === "tool_result") trackCron(c.id, m);
   }
   if (m.type === "tool_call" || m.type === "approval_request") c.pending = (c.pending ?? 0) + 1;
   if (m.type === "tool_result" || m.type === "sop_approval_result") c.pending = Math.max(0, (c.pending ?? 0) - 1);
@@ -666,6 +675,17 @@ function cancelResume(id: string) {
 
 for (const id of Object.keys(state.resume)) armResume(id);
 recoverInflight();
+
+startCronPoller({
+  busy: (id) => {
+    const c = convs.get(id);
+    return c?.status === "running" || !!c?.finishing || runningElsewhere.has(id);
+  },
+  posted: (id) => {
+    refresh();
+    pushSnapshot(id).catch((e) => console.error(`broker: snapshot ${id}:`, msg(e)));
+  },
+});
 
 // Failed titles retry after TITLE_RETRY_MS (e.g. titler agent missing until zeroclaw-config is merged), not every poll.
 const TITLE_RETRY_MS = 10 * 60_000;
