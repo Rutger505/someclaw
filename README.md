@@ -38,7 +38,7 @@ git clone git@github.com:Rutger505/someclaw.git ~/.local/share/someclaw
 
 - `someclaw.service`: `bun server.ts`. Logs: `journalctl --user -u someclaw`.
 - `someclaw-update.service`: `bin/someclaw-update` pushes local commits, fast-forwards to `origin/main`, reruns `install.sh` (`bun install`, build, units) and restarts `someclaw.service` only if server code (`server.ts`, `server/`, `shared/`) or a unit changed. Refuses a dirty tree or a diverged branch (`journalctl --user -u someclaw-update`).
-- `someclaw-update.timer`: fallback, runs it every 15 minutes.
+- `someclaw-update.timer`: runs it every minute (no-op without changes).
 
 ## Deploy
 

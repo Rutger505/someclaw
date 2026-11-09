@@ -1,8 +1,8 @@
 [Unit]
-Description=Fallback: run someclaw-update.service every 15 minutes (bin/deploy updates right away)
+Description=Run someclaw-update.service every minute (bin/deploy updates right away)
 
 [Timer]
-OnCalendar=*:0/15
+OnCalendar=*:0/1
 Persistent=true
 AccuracySec=30s
 RandomizedDelaySec=5s

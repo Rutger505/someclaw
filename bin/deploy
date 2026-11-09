@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run from the dev clone (~/Source/someclaw): pushes main and updates the live checkout right away,
-# instead of waiting for the fallback timer.
+# instead of waiting for the 1-min timer, and checks it went live.
 set -e
 cd "$(dirname "$(realpath "$0")")/.."
 live="$HOME/.local/share/someclaw"
