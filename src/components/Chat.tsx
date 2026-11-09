@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, CircleHelp, Clock, Copy, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Resume, TurnModel } from "../../shared/protocol";
@@ -41,6 +41,8 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const stick = useRef(true); // follow new output only while scrolled to the bottom
   const items = useMemo(() => (snap?.id === id ? buildItems(snap) : []), [snap, id]);
   const running = conv?.status === "running";
+  /** rocky waits on an ask_user answer: the composer answers it. */
+  const asking = running && items.some((x) => x.kind === "ask" && x.open);
   const historyLen = snap?.id === id ? snap.history.length : 0;
   const readOnly = !!conv?.channel;
   // Channel threads start locked: typing there forks, so it takes a deliberate click or Ctrl+Shift+F.
@@ -194,6 +196,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             <Row
               key={i}
               item={item}
+              onAnswer={(request_id, answer) => send({ type: "answer", id, request_id, answer })}
               // Reset to here: own conversations, between turns, only with something below to delete.
               reset={
                 !readOnly && !running && "at" in item && item.at !== undefined && i < items.length - 1
@@ -204,7 +207,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           ))}
           {conv?.error && !running && <Banner label="Turn failed" text={conv.error} />}
           {conv?.resume && !running && <Waiting resume={conv.resume} onCancel={() => send({ type: "abort", id })} />}
-          {running && items.at(-1)?.kind !== "agent" && <Thinking />}
+          {running && !asking && items.at(-1)?.kind !== "agent" && <Thinking />}
         </div>
       </div>
 
@@ -270,7 +273,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                   setUnlocked(false); // back to read-only
                 }
               }}
-              placeholder={readOnly ? "Continue in a new someclaw conversation…" : running ? "Steer rocky…" : "Message rocky…"}
+              placeholder={readOnly ? "Continue in a new someclaw conversation…" : asking ? "Answer rocky…" : running ? "Steer rocky…" : "Message rocky…"}
               className="field-sizing-content block max-h-64 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none placeholder:text-faint disabled:opacity-50"
             />
             <div className="flex items-center gap-2 px-3 pb-2.5">
@@ -352,7 +355,7 @@ function Locked({ channel, onUnlock }: { channel: string; onUnlock: () => void }
 
 type Reset = { below: number; run: () => void };
 
-function Row({ item, reset }: { item: Item; reset?: Reset }) {
+function Row({ item, reset, onAnswer }: { item: Item; reset?: Reset; onAnswer: (requestId: string, answer: string) => void }) {
   switch (item.kind) {
     case "user": {
       const { files, text } = splitAttachments(item.text);
@@ -418,9 +421,46 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
       return <ToolGroup tools={item.tools} live={!!item.live} />;
     case "plan":
       return <Plan entries={item.entries} live={!!item.live} />;
+    case "ask":
+      return <Ask item={item} onAnswer={onAnswer} />;
     case "meta":
       return item.error ? <Banner text={item.text} /> : <p className="text-xs text-muted">{item.text}</p>;
   }
+}
+
+/** rocky's ask_user question: choices as buttons; a free answer goes through the composer (broker routes it here). */
+function Ask({ item, onAnswer }: { item: Extract<Item, { kind: "ask" }>; onAnswer: (requestId: string, answer: string) => void }) {
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${item.open ? "border-accent-dim bg-accent-glow" : "border-line bg-surface"}`}>
+      <p className="mb-1 flex items-center gap-1.5 text-xs text-muted">
+        <CircleHelp size={13} className={item.open ? "text-accent" : ""} />
+        <span className="font-medium text-fg-2">rocky asks</span>
+        {item.open && <span>· answer below{item.choices.length > 0 && " or pick one"}</span>}
+      </p>
+      <Markdown text={item.question} />
+      {item.open && item.choices.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {item.choices.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => onAnswer(item.requestId, c)}
+              className="rounded-full bg-elevated px-3 py-1.5 text-sm text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-accent-glow hover:text-fg hover:ring-accent-dim"
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+      {item.answer !== undefined && (
+        <p className="mt-2 flex items-start gap-1.5 text-sm text-fg">
+          <CornerDownRight size={14} className="mt-0.5 shrink-0 text-accent" />
+          <span className="whitespace-pre-wrap wrap-anywhere">{item.answer}</span>
+        </p>
+      )}
+      {item.outcome !== undefined && <p className="mt-2 font-mono text-xs text-err">{item.outcome || "closed without an answer"}</p>}
+    </div>
+  );
 }
 
 const tok = (n: number) => (n < 1000 ? String(n) : n < 1e6 ? `${(n / 1e3).toFixed(1)}k` : `${(n / 1e6).toFixed(2)}M`);

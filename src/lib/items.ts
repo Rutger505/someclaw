@@ -13,6 +13,8 @@ export type Item =
   | { kind: "cron"; text: string; cron: CronRun; at: number }
   /** TodoWrite plan (gateway "plan" event); a newer one in the same turn replaces it. */
   | { kind: "plan"; entries: PlanEntry[]; live?: boolean }
+  /** ask_user question of the running turn. outcome: tool result when it closed without an answer (timeout, error). */
+  | { kind: "ask"; requestId: string; question: string; choices: string[]; answer?: string; outcome?: string; open: boolean }
   | { kind: "meta"; text: string; error?: boolean };
 
 const RESUME_META = "↻ auto-resumed after rate limit reset";
@@ -44,7 +46,26 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       if (last?.kind === "agent") last.live = false;
       break;
     }
+    case "ask_user":
+      items.push({
+        kind: "ask",
+        requestId: String(e.request_id ?? ""),
+        question: String(e.question ?? ""),
+        choices: Array.isArray(e.choices) ? e.choices.map(String) : [],
+        open: live,
+      });
+      if (last?.kind === "agent") last.live = false;
+      break;
+    case "ask_user_answered": {
+      const q = items.findLast((x) => x.kind === "ask" && x.requestId === e.request_id);
+      if (q?.kind === "ask") Object.assign(q, { answer: String(e.answer ?? ""), open: false });
+      break;
+    }
     case "tool_result": {
+      if (e.name === "ask_user") {
+        const q = items.findLast((x) => x.kind === "ask");
+        if (q?.kind === "ask" && q.open) Object.assign(q, { open: false, outcome: String(e.output ?? "") });
+      }
       const group = items.findLast((x) => x.kind === "tools");
       const t = group?.tools.findLast((t) => (e.id ? t.id === e.id : t.name === e.name && t.output === undefined));
       if (t) t.output = String(e.output ?? "");

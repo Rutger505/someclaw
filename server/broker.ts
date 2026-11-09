@@ -379,6 +379,7 @@ function onEvent(c: Conv, m: GatewayEvent) {
     finish(c, "idle");
   }
   else if (m.type === "aborted") finish(c, "idle", null, true);
+  else if (m.type === "error" && NON_FATAL.has(String(m.code))) console.warn(`broker: ${c.id}: ${JSON.stringify(m)}`);
   else if (m.type === "error") {
     // raw frame, so rate-limit/quota errors can be matched on later (journalctl --user -u someclaw | grep gateway-error)
     console.error(`broker: gateway-error ${c.id}: ${JSON.stringify(m)}`);
@@ -387,6 +388,26 @@ function onEvent(c: Conv, m: GatewayEvent) {
       if (/rate.?limit/i.test(`${m.code ?? ""} ${error}`)) scheduleResume(c.id);
     });
   }
+}
+
+/** Gateway errors about one client frame mid-turn: the turn keeps running. */
+const NON_FATAL = new Set(["ASK_USER_NOT_PENDING", "INVALID_ASK_USER_RESPONSE"]);
+
+/** request_id of the running turn's ask_user question still waiting for an answer. */
+function openQuestion(c: Conv): string | null {
+  let open: string | null = null;
+  for (const e of c.turn) {
+    if (e.type === "ask_user") open = String(e.request_id);
+    else if (e.type === "ask_user_answered" && e.request_id === open) open = null;
+    else if (e.type === "tool_result" && e.name === "ask_user") open = null; // timed out / failed
+  }
+  return open;
+}
+
+async function answer(c: Conv, requestId: string, text: string) {
+  const up = await upstream(c);
+  up.send(JSON.stringify({ type: "ask_user_response", request_id: requestId, answer: text }));
+  record(c, { type: "ask_user_answered", request_id: requestId, answer: text });
 }
 
 async function finish(c: Conv, status: ConvStatus, error: string | null = null, aborted = false) {
@@ -818,6 +839,16 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
         return startTurn(c, text);
       }
       if (c.recovering) return fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
+      // rocky is blocked on ask_user: a steer would only land after it times out
+      const q = openQuestion(c);
+      if (q) {
+        try {
+          await answer(c, q, text);
+        } catch (e) {
+          fail(`answer: ${msg(e)}`);
+        }
+        return;
+      }
       try {
         const up = await upstream(c);
         record(c, { type: "user", content: text, steer: true });
@@ -827,6 +858,19 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
         fail(`steer: ${msg(e)}`);
       }
       return broadcastList();
+    }
+
+    case "answer": {
+      const c = convs.get(m.id);
+      if (!c || c.status !== "running") return fail("answer: no running turn");
+      if (openQuestion(c) !== m.request_id) return fail(`answer: question ${m.request_id} is not open (answered or timed out)`);
+      if (!m.answer.trim()) return;
+      try {
+        await answer(c, m.request_id, m.answer);
+      } catch (e) {
+        fail(`answer: ${msg(e)}`);
+      }
+      return;
     }
 
     case "fork": {

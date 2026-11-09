@@ -1,8 +1,9 @@
 // Browser <-> someclaw server protocol over /someclaw/ws. The server (broker) owns the gateway sockets, so turns
 // and status survive tab switches, reloads and closed browsers.
 
-/** Raw gateway /ws/chat event (chunk, chunk_reset, message, done, aborted, tool_call, tool_result, error, session_start, ...),
- * plus `user` for a message the broker sent, so a replayed turn shows it. */
+/** Raw gateway /ws/chat event (chunk, chunk_reset, message, done, aborted, tool_call, tool_result, error, session_start,
+ * ask_user, ...), plus `user` for a message the broker sent and `ask_user_answered` for an answer it passed on, so a
+ * replayed turn shows them. */
 export type GatewayEvent = { type: string; [k: string]: unknown };
 
 /** waiting = rate-limited, the broker resumes the turn itself at `resume.at`. */
@@ -76,8 +77,11 @@ export type ModelOption = { ref: string; family: string; alias: string; model: s
 
 export type ClientMsg =
   | { type: "subscribe"; id: string | null }
-  /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in). */
+  /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in);
+   * answers rocky's open ask_user question instead when there is one. */
   | { type: "send"; id: string; text: string }
+  /** Answer the running turn's ask_user question (gateway ask_user frame, zeroclaw-patches 0003). */
+  | { type: "answer"; id: string; request_id: string; answer: string }
   /** Continue read-only channel session `from` in new conversation `id`: `text` plus that thread as context. */
   | { type: "fork"; from: string; id: string; text: string }
   /** Running: stops the turn. Waiting: cancels the auto-resume. */
