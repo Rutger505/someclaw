@@ -583,6 +583,7 @@ const resumeTimers = new Map<string, Timer>();
 const resumeAttempts = new Map<string, number>();
 
 async function scheduleResume(id: string) {
+  if (id in state.archived) return console.log(`broker: resume ${id}: archived, not resuming`);
   const attempt = (resumeAttempts.get(id) ?? 0) + 1;
   if (attempt > MAX_RESUME_ATTEMPTS) {
     console.error(`broker: resume ${id}: still rate-limited after ${MAX_RESUME_ATTEMPTS} attempts, giving up`);
@@ -610,7 +611,7 @@ async function scheduleResume(id: string) {
     at = Date.now() + FALLBACK_RETRY_MS;
     reason = `reset time unknown (${msg(e)}): retry in 5 min`;
   }
-  if (convs.get(id)?.status === "running") return; // user started a new turn meanwhile
+  if (convs.get(id)?.status === "running" || id in state.archived) return; // new turn or archived meanwhile
   state.resume[id] = { at: new Date(at).toISOString(), reason, attempt, max: MAX_RESUME_ATTEMPTS };
   save();
   console.log(`broker: resume ${id} at ${state.resume[id].at} (attempt ${attempt}/${MAX_RESUME_ATTEMPTS}): ${reason}`);
@@ -632,6 +633,7 @@ function armResume(id: string) {
 function resumeNow(id: string) {
   resumeTimers.delete(id);
   if (!state.resume[id]) return;
+  if (id in state.archived) return void cancelResume(id); // waits from before archiving existed
   resumeAttempts.set(id, Math.max(resumeAttempts.get(id) ?? 0, state.resume[id].attempt));
   delete state.resume[id];
   save();
@@ -802,8 +804,10 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
 
     case "archive":
       console.log(`broker: ${m.archived ? "archive" : "unarchive"} ${m.id} (${ws.data.ua})`);
-      if (m.archived) state.archived[m.id] = new Date().toISOString();
-      else delete state.archived[m.id];
+      if (m.archived) {
+        state.archived[m.id] = new Date().toISOString();
+        cancelResume(m.id); // archived = done: no auto-resume after a rate limit
+      } else delete state.archived[m.id];
       save();
       return broadcastList();
 
