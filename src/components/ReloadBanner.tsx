@@ -1,6 +1,6 @@
 import { RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, getToken } from "../lib/gateway";
+import { api, getToken, HttpError } from "../lib/gateway";
 
 type ReloadStatus = {
   pending_reload: boolean;
@@ -9,6 +9,7 @@ type ReloadStatus = {
 type Drift = { drifted: { path: string; secret?: boolean }[] };
 
 const POLL_MS = 5_000;
+const DOWN_RETRY_MS = 300; // gateway down (restarting): notice it's back right away
 
 /**
  * Same signals as the official dashboard's ReloadBanner: config writes that only apply after a gateway reload
@@ -26,6 +27,7 @@ export function ReloadBanner({ busy }: { busy: boolean }) {
     let live = true;
     let timer: Timer | undefined;
     const poll = async () => {
+      let wait = POLL_MS;
       if (document.visibilityState === "visible") {
         try {
           const [status, drift] = await Promise.all([api<ReloadStatus>("/api/config/reload-status"), api<Drift>("/api/config/drift")]);
@@ -39,9 +41,10 @@ export function ReloadBanner({ busy }: { busy: boolean }) {
           setPollError(null);
         } catch (e) {
           if (live) setPollError(e instanceof Error ? e.message : String(e)); // gateway down mid-reload, etc.
+          if (!(e instanceof HttpError) || e.status >= 500) wait = DOWN_RETRY_MS;
         }
       }
-      if (live) timer = setTimeout(poll, POLL_MS);
+      if (live) timer = setTimeout(poll, wait);
     };
     poll();
     return () => {
@@ -56,11 +59,11 @@ export function ReloadBanner({ busy }: { busy: boolean }) {
       const res = await fetch("/someclaw/reload", { method: "POST", headers: { authorization: `Bearer ${getToken()}` } });
       if (!res.ok) throw new Error(`POST /admin/reload: ${res.status} ${await res.text()}`);
       // Wait for the new gateway instance before polling the flags again.
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
+      for (let i = 0; i < 300; i++) {
+        await new Promise((r) => setTimeout(r, 200));
         const h = await fetch("/health").catch(() => null);
         if (h?.ok) break;
-        if (i === 59) throw new Error(`gateway not healthy 60 s after reload: /health ${h ? `${h.status} ${await h.text()}` : "unreachable"}`);
+        if (i === 299) throw new Error(`gateway not healthy 60 s after reload: /health ${h ? `${h.status} ${await h.text()}` : "unreachable"}`);
       }
       setReload(null);
       setTick((t) => t + 1);

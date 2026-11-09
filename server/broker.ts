@@ -1,7 +1,7 @@
 // Broker: owns one gateway /ws/chat socket per active conversation, so turns and status survive tab switches,
 // reloads and closed browsers. Browsers talk to it over /someclaw/ws (shared/protocol.ts).
 import type { ServerWebSocket, WebSocketHandler } from "bun";
-import { AGENT, api, chatSocket, GatewayError, tokenValid, type GatewaySession } from "./gateway";
+import { AGENT, api, chatSocket, GatewayError, gatewayDown, tokenValid, type GatewaySession } from "./gateway";
 import {
   appendTools,
   appendTurn,
@@ -74,12 +74,16 @@ type Conv = {
 // Gateway allows wss.max_sessions_per_client (8) sockets: close idle ones.
 const UPSTREAM_IDLE_MS = 60_000;
 const POLL_MS = 5_000;
+// Gateway unreachable (restarting): retry this fast, so the list recovers within ms of it coming back. Local
+// connection refusals cost nothing.
+const DOWN_RETRY_MS = 200;
 
 const convs = new Map<string, Conv>();
 const clients = new Set<ServerWebSocket<Client>>();
 let sessions: GatewaySession[] = [];
 let runningElsewhere = new Set<string>(); // turns started outside someclaw (dashboard, WhatsApp)
 let listError: string | null = null;
+let listDown = false; // last refresh failed because the gateway was down
 const titling = new Set<string>();
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -165,8 +169,10 @@ function refresh() {
       backfillPreviews();
       backfillTitles();
       listError = null;
+      listDown = false;
     } catch (e) {
       listError = msg(e);
+      listDown = gatewayDown(e);
       if (e instanceof GatewayError && e.status === 401) unauthorized();
     } finally {
       refreshing = null;
@@ -174,7 +180,10 @@ function refresh() {
     broadcastList();
   })());
 }
-setInterval(() => clients.size && refresh(), POLL_MS);
+(function poll() {
+  const p = clients.size ? refresh() : Promise.resolve();
+  p.then(() => setTimeout(poll, listDown ? DOWN_RETRY_MS : POLL_MS));
+})();
 
 // Turns the gateway still lists as running after a crash/restart (it doesn't reset them): they never finish, so the
 // conversation would look busy forever. Only checked while something runs outside someclaw.
@@ -452,7 +461,7 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
 // sends them only to the socket that started the turn). ZeroClaw restart: the turn is gone, the gateway stored nothing
 // of it: resent once with the steps it already ran (resendPrompt).
 
-const RECOVER_POLL_MS = 3_000;
+const RECOVER_POLL_MS = 3_000; // gateway up, turn still running there: wait for it to end
 const RECOVER_GIVE_UP_MS = 30 * 60_000; // gateway unreachable this long: stop waiting
 const STEP_TYPES = new Set(["tool_call", "tool_result"]);
 
@@ -478,6 +487,7 @@ async function recover(c: Conv) {
   const since = Date.now();
   let lastError = "";
   while (c.recovering && c.rec === rec) {
+    let wait = RECOVER_POLL_MS;
     try {
       if (!state.token) throw new Error("no gateway token");
       const { daemon_started_at } = await api<{ daemon_started_at: string }>(state.token, "/api/status");
@@ -487,8 +497,9 @@ async function recover(c: Conv) {
     } catch (e) {
       if (msg(e) !== lastError) console.error(`broker: recover ${c.id}: ${(lastError = msg(e))}`);
       if (Date.now() - since > RECOVER_GIVE_UP_MS) return finish(c, "error", `turn lost: gateway unreachable for 30 min (${lastError})`);
+      if (gatewayDown(e)) wait = DOWN_RETRY_MS; // restarting: resend as soon as it's back
     }
-    await Bun.sleep(RECOVER_POLL_MS);
+    await Bun.sleep(wait);
   }
 }
 

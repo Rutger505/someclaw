@@ -6,6 +6,10 @@ export class GatewayError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** Gateway not answering (restarting): connection refused/reset, or its 503 while it reloads. Worth a fast retry. */
+export const gatewayDown = (e: unknown) =>
+  e instanceof GatewayError ? e.status === 503 : typeof (e as { code?: unknown })?.code === "string";
+
 export async function api<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(GATEWAY + path, {
     ...init,
