@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>someclaw</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%226%22 fill=%22%2322d3ee%22/%3E%3C/svg%3E">
+<script>
+// A bundle that fails to load (request landed in a deploy's restart gap, proxy 502) leaves a blank page: retry, then say so.
+addEventListener("error", (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLScriptElement || t instanceof HTMLLinkElement)) return;
+  const n = +(sessionStorage.getItem("someclaw.bootRetry") || 0);
+  if (n >= 20) return void (document.body && (document.body.textContent = `someclaw: ${t.src || t.href} failed to load 20 times, reload the page`));
+  sessionStorage.setItem("someclaw.bootRetry", String(n + 1));
+  setTimeout(() => location.reload(), n < 8 ? 250 : 2000);
+}, true);
+</script>
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
