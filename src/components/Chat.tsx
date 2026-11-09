@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, Clock, Copy, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Resume, TurnModel } from "../../shared/protocol";
@@ -146,6 +146,27 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
               {conv ? convTitle(conv) : <span className="text-muted">New conversation</span>}
             </span>
             {conv?.channel && <span className="rounded-md bg-elevated px-1.5 py-0.5 text-xs text-fg-2">{conv.channel} · read-only</span>}
+          </div>
+        )}
+        {!readOnly && snap?.id === id && snap.skills.length > 0 && (
+          <div className="hidden items-center gap-1 sm:flex">
+            {snap.skills.map((name) => (
+              <span
+                key={name}
+                title={`Skill ${name} is pinned: its SKILL.md goes along with your next message when it isn't in the context yet (or changed)`}
+                className="flex h-7 items-center gap-1 rounded-md bg-elevated pr-0.5 pl-2 text-xs text-fg-2 ring-1 ring-line"
+              >
+                <Pin size={12} className="text-accent" />
+                {name}
+                <button
+                  onClick={() => send({ type: "unpin", id, name })}
+                  title={`Unpin ${name} (pinned again when rocky reads it again)`}
+                  className="grid size-5 place-items-center rounded text-muted hover:bg-line-strong hover:text-fg"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
           </div>
         )}
         {!readOnly && <ModelSelector value={snap?.id === id ? snap.model : null} onChange={(ref) => send({ type: "model", id, ref })} />}
@@ -346,6 +367,11 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
             <a href={`#${encodeURIComponent(item.fork.id)}`} className="flex items-center gap-1 text-xs text-accent hover:underline">
               <GitBranch size={12} /> continued from {item.fork.channel} · {item.fork.messages} messages as context
             </a>
+          )}
+          {item.skills && item.skills.length > 0 && (
+            <span className="flex items-center gap-1 text-xs text-muted" title={item.skills.map((s) => `${s.name} (${s.hash})`).join(", ")}>
+              <Pin size={12} /> sent along: {item.skills.map((s) => s.name).join(", ")}
+            </span>
           )}
           {files.length > 0 && (
             <div className="flex flex-wrap justify-end gap-1.5">

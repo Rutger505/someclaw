@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientMsg, Conversation, GatewayEvent, ServerMsg, ToolLog, HistoryMessage, TurnModel } from "../../shared/protocol";
 import { getToken } from "./gateway";
 
-export type Snapshot = { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null };
+export type Snapshot = { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null; skills: string[] };
 export type Link = "connecting" | "open" | "closed";
 
 /** One /someclaw/ws socket to the broker: conversation list for the sidebar + the open conversation. */

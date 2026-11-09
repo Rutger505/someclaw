@@ -51,7 +51,12 @@ export type HistoryMessage = {
   resent?: Resent;
   /** Assistant message the broker posted with a cron job's run result (content is then only the run's output). */
   cron?: CronRun;
+  /** Pinned skills the broker sent along with this user message (content is then only what the user typed). */
+  skills?: LoadedSkill[];
 };
+
+/** A skill's SKILL.md as sent along; hash: of its content, so a changed skill is sent again. */
+export type LoadedSkill = { name: string; hash: string };
 
 /** A run of a cron job created in this conversation (server/cron.ts). */
 export type CronRun = { job: string; name: string | null; run: number; status: string; at: string };
@@ -81,6 +86,8 @@ export type ClientMsg =
   | { type: "rename"; id: string; name: string }
   /** Model for this conversation's next turns; null = rocky's default. */
   | { type: "model"; id: string; ref: string | null }
+  /** Stop sending a pinned skill along (pinned again when rocky reads it again). */
+  | { type: "unpin"; id: string; name: string }
   /** Reset to here: keep history[0..keep), delete everything after. `seen`: history length the browser showed. */
   | { type: "reset"; id: string; keep: number; seen: number };
 
@@ -89,7 +96,9 @@ export type ServerMsg =
   /** Sent on subscribe and after each turn: persisted history, tool logs and the events of the running turn so far. */
   | { type: "snapshot"; id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null;
       /** Chosen model provider ref; null = rocky's default (agents.rocky.model_provider). */
-      model: string | null }
+      model: string | null;
+      /** Skills pinned in this conversation (read_skill earlier on), sent along with the next message when not in context. */
+      skills: string[] }
   | { type: "event"; id: string; event: GatewayEvent }
   | { type: "error"; message: string }
   | { type: "unauthorized" };
@@ -223,4 +232,27 @@ export function parseCron(content: string): { text: string; cron?: CronRun } {
   const m = CRON_RE.exec(content);
   if (!m) return { text: content };
   return { text: m[6]!, cron: { job: m[1]!, name: m[2] || null, run: Number(m[3]), status: m[4]!, at: m[5]! } };
+}
+
+// ---------- pinned skills ----------
+// ZeroClaw's /ws/chat history keeps no tool results: a SKILL.md rocky read with read_skill is gone the next turn, so it
+// reads it again every turn. The broker sends the skills read in a conversation along with the next user message, once
+// (it stays in the history), and again only when the skill changed or the block is gone (reset). The UI hides the block.
+
+const SKILL_RE = /^<loaded-skill name="([^"]*)" hash="([^"]*)">[\s\S]*?<\/loaded-skill>\n\n/;
+const SKILL_CLOSE = "</loaded-skill>";
+
+export function skillBlock(s: LoadedSkill, content: string) {
+  const intro = `[someclaw] Full SKILL.md of skill "${s.name}", which you read earlier in this conversation (read_skill results don't stay in the history). Sent along by someclaw, current version: no need to read_skill it again.`;
+  return `<loaded-skill name="${attr(s.name)}" hash="${attr(s.hash)}">\n${intro}\n\n${content.replaceAll(SKILL_CLOSE, "</loaded_skill>").trim()}\n${SKILL_CLOSE}\n\n`;
+}
+
+export function parseSkills(content: string): { text: string; skills?: LoadedSkill[] } {
+  const skills: LoadedSkill[] = [];
+  let text = content;
+  for (let m = SKILL_RE.exec(text); m; m = SKILL_RE.exec(text)) {
+    skills.push({ name: m[1]!, hash: m[2]! });
+    text = text.slice(m[0].length);
+  }
+  return skills.length ? { text, skills } : { text };
 }

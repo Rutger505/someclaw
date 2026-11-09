@@ -19,6 +19,7 @@ import {
 import { clearDeadTurns, parseTime, truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { pollCronNow, startCronPoller, trackCron } from "./cron";
+import { pinnedSkills, skillsPrompt, unpinSkill } from "./skills";
 import { rateLimitReset } from "./usage";
 import { previewText } from "../shared/attachments";
 import {
@@ -27,6 +28,7 @@ import {
   parseCron,
   parseFork,
   parseResent,
+  parseSkills,
   resendPrompt,
   plainText,
   stripDatePrefix,
@@ -218,6 +220,7 @@ function forgetIfRecreated(s: GatewaySession) {
     delete state.titled[id];
     delete state.channelTitles[id];
     delete state.previews[id];
+    delete state.unpinned[id];
   }
   state.created[id] = s.created_at;
   save();
@@ -263,9 +266,10 @@ async function history(id: string): Promise<HistoryMessage[]> {
       return cron ? { ...m, content: text, cron } : m;
     }
     if (m.role !== "user") return m;
-    const { text: content, resent } = parseResent(stripDatePrefix(m.content));
+    const { text: unresent, resent } = parseResent(stripDatePrefix(m.content));
+    const { text: content, skills } = parseSkills(unresent);
     const { text, fork } = parseFork(content);
-    return { ...m, content: text, ...(fork && { fork }), ...(resent && { resent }) };
+    return { ...m, content: text, ...(fork && { fork }), ...(resent && { resent }), ...(skills && { skills }) };
   });
 }
 
@@ -277,7 +281,7 @@ async function snapshot(id: string): Promise<ServerMsg> {
   } catch (e) {
     historyError = msg(e);
   }
-  return { type: "snapshot", id, history: h, tools: readTools(id), turns: readTurns(id), turn: convs.get(id)?.turn ?? [], historyError, model: state.models[id] ?? null };
+  return { type: "snapshot", id, history: h, tools: readTools(id), turns: readTurns(id), turn: convs.get(id)?.turn ?? [], historyError, model: state.models[id] ?? null, skills: pinnedSkills(id) };
 }
 
 async function pushSnapshot(id: string) {
@@ -439,6 +443,23 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   closeWhenIdle(c);
 }
 
+/** Pinned skills not in the history yet (server/skills.ts). Never fails the turn: worst case nothing is sent along. */
+async function withSkills(id: string) {
+  try {
+    if (!pinnedSkills(id).length) return { prefix: "", sent: [] };
+    const h = await history(id).catch((e) => {
+      console.error(`broker: ${id}: history for pinned skills: ${msg(e)}, sending all along`);
+      return null;
+    });
+    const r = skillsPrompt(id, h);
+    if (r.sent.length) console.log(`broker: ${id}: sending pinned skills along: ${r.sent.map((s) => `${s.name}@${s.hash}`).join(", ")}`);
+    return r;
+  } catch (e) {
+    console.error(`broker: ${id}: pinned skills: ${msg(e)}`);
+    return { prefix: "", sent: [] };
+  }
+}
+
 /** `fork`: first turn of a conversation continuing a channel session; `context` is that session's transcript. */
 async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: string }) {
   c.status = "running";
@@ -450,8 +471,9 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   c.pending = 0;
   if (!session(c.id)?.message_count) state.previews[c.id] ??= previewText(text).slice(0, 200);
   save();
-  record(c, fork ? { type: "user", content: text, fork: fork.ref } : { type: "user", content: text });
-  const sent = fork ? forkPrompt(fork.ref, fork.context, text) : text;
+  const { prefix, sent: skills } = await withSkills(c.id);
+  record(c, { type: "user", content: text, ...(fork && { fork: fork.ref }), ...(skills.length ? { skills } : {}) });
+  const sent = prefix + (fork ? forkPrompt(fork.ref, fork.context, text) : text);
   c.rec = { id: c.id, text, sent, ...(fork && { fork: fork.ref }), startedAt: c.startedAt, events: [], resent: false };
   writeInflight(c.rec);
   broadcastList();
@@ -875,6 +897,16 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       // Idle: reopen now-ish (next turn). Running: the turn keeps its model, upstream() reopens before the next one.
       const c = convs.get(m.id);
       if (c?.up && c.status !== "running") dropUpstream(c, "model changed");
+      return pushSnapshot(m.id);
+    }
+
+    case "unpin": {
+      try {
+        unpinSkill(m.id, m.name, (await history(m.id)).length);
+        console.log(`broker: unpin skill ${m.name} in ${m.id} (${ws.data.ua})`);
+      } catch (e) {
+        return fail(`unpin: ${msg(e)}`);
+      }
       return pushSnapshot(m.id);
     }
 

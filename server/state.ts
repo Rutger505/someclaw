@@ -43,13 +43,15 @@ export type State = {
   token: string | null;
   /** Cron jobs created in a conversation here, whose runs the broker posts into it (server/cron.ts). */
   cron: Record<string, CronTrack>;
+  /** Pinned skills unpinned by hand: id -> skill -> history length then (a later read pins it again). server/skills.ts */
+  unpinned: Record<string, Record<string, number>>;
 };
 
 /** session: conversation the job was created in; lastRun: highest run id handled; goneSince: job first missing from the list. */
 export type CronTrack = { session: string; name: string | null; since: string; lastRun: number; goneSince?: string };
 
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, models: {}, cron: {}, token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, models: {}, cron: {}, unpinned: {}, token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 
