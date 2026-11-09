@@ -292,7 +292,7 @@ function upstream(c: Conv): Promise<WebSocket> {
   if (c.upReady && c.upModel !== model && c.status !== "running") dropUpstream(c, "model changed");
   if (c.upReady) return c.upReady;
   if (!state.token) return Promise.reject(new Error("no gateway token: open someclaw in a browser and pair"));
-  const up = chatSocket(state.token, c.id, model || undefined);
+  const up = chatSocket(state.token, c.id, { model: model || undefined });
   c.up = up;
   c.upModel = model;
   let opened = false;

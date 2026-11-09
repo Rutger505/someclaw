@@ -8,7 +8,7 @@ const TITLE_AGENT = process.env.SOMECLAW_TITLE_AGENT ?? "titler";
 
 function ask(token: string, sessionId: string, prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const sock = chatSocket(token, sessionId, TITLE_AGENT);
+    const sock = chatSocket(token, sessionId, { agent: TITLE_AGENT });
     const timer = setTimeout(() => { sock.close(); reject(new Error("title: timeout after 60 s")); }, 60_000);
     const end = (fn: () => void) => { clearTimeout(timer); sock.close(); fn(); };
     sock.onopen = () => sock.send(JSON.stringify({ type: "message", content: prompt }));

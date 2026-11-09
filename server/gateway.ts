@@ -23,7 +23,7 @@ export async function tokenValid(token: string) {
 }
 
 /** model: provider ref for this session (model_provider query param); omitted = the agent's configured default. */
-export function chatSocket(token: string, sessionId: string, model?: string, agent = AGENT) {
+export function chatSocket(token: string, sessionId: string, { model, agent = AGENT }: { model?: string; agent?: string } = {}) {
   const q = new URLSearchParams({ session_id: sessionId, agent }); // token as subprotocol: kept out of URLs/logs
   if (model) q.set("model_provider", model);
   return new WebSocket(`${GATEWAY.replace(/^http/, "ws")}/ws/chat?${q}`, ["zeroclaw.v1", `bearer.${token}`]);
