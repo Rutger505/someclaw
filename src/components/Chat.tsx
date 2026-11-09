@@ -7,7 +7,7 @@ import { uploadFile } from "../lib/gateway";
 import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
 import { convTitle, IconButton, Kbd, StatusDot } from "./Sidebar";
-import { ToolGroup } from "./Tools";
+import { Plan, ToolGroup } from "./Tools";
 import { ModelSelector } from "./ModelSelector";
 
 /** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
@@ -372,6 +372,8 @@ function Row({ item, reset }: { item: Item; reset?: Reset }) {
       );
     case "tools":
       return <ToolGroup tools={item.tools} live={!!item.live} />;
+    case "plan":
+      return <Plan entries={item.entries} live={!!item.live} />;
     case "meta":
       return item.error ? <Banner text={item.text} /> : <p className="text-xs text-muted">{item.text}</p>;
   }

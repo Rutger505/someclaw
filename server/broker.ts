@@ -353,7 +353,7 @@ function onEvent(c: Conv, m: GatewayEvent) {
     return emit(c.id, m);
   }
   record(c, m);
-  if (m.type === "tool_call" || m.type === "tool_result") {
+  if (STEP_TYPES.has(m.type)) {
     c.tools.push(m);
     keepStep(c, m);
   }
@@ -463,7 +463,7 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
 
 const RECOVER_POLL_MS = 3_000; // gateway up, turn still running there: wait for it to end
 const RECOVER_GIVE_UP_MS = 30 * 60_000; // gateway unreachable this long: stop waiting
-const STEP_TYPES = new Set(["tool_call", "tool_result"]);
+const STEP_TYPES = new Set(["tool_call", "tool_result", "plan"]); // persisted with the turn (gateway history has none)
 
 function keepStep(c: Conv, e: GatewayEvent) {
   if (!c.rec) return;

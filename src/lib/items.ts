@@ -2,12 +2,15 @@ import { RESUME_TEXT, assistantParts, toolResult, type ForkRef, type GatewayEven
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
+export type PlanEntry = { content: string; activeForm?: string; status: string };
 export type Item =
   /** at: index in the persisted history (reset to here); absent for the running turn. */
   | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef; resent?: Resent; at?: number }
   /** turn: model, tokens, duration, when known (turns finished in someclaw since this was added). */
   | { kind: "agent"; text: string; live?: boolean; at?: number; turn?: TurnModel }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
+  /** TodoWrite plan (gateway "plan" event); a newer one in the same turn replaces it. */
+  | { kind: "plan"; entries: PlanEntry[]; live?: boolean }
   | { kind: "meta"; text: string; error?: boolean };
 
 const RESUME_META = "↻ auto-resumed after rate limit reset";
@@ -29,7 +32,7 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       const full = String(e.full_response ?? e.content ?? "").trim();
       // Streamed chunks already show it; only fill in when nothing streamed.
       if (full && !items.some((x) => x.kind === "agent")) items.push({ kind: "agent", text: full });
-      for (const x of items) if (x.kind === "agent" || x.kind === "tools") x.live = false;
+      for (const x of items) if (x.kind === "agent" || x.kind === "tools" || x.kind === "plan") x.live = false;
       break;
     }
     case "tool_call": {
@@ -44,6 +47,18 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       const t = group?.tools.findLast((t) => (e.id ? t.id === e.id : t.name === e.name && t.output === undefined));
       if (t) t.output = String(e.output ?? "");
       else items.push({ kind: "tools", tools: [{ id: String(e.id ?? ""), name: String(e.name ?? "?"), args: {}, output: String(e.output ?? "") }] });
+      break;
+    }
+    case "plan": {
+      const entries = (Array.isArray(e.entries) ? e.entries : []).map((x: Record<string, unknown>) => ({
+        content: String(x.content ?? ""),
+        activeForm: typeof x.activeForm === "string" ? x.activeForm : undefined,
+        status: String(x.status ?? "pending"),
+      }));
+      // one plan per turn, shown at its latest update
+      for (let i = items.length - 1; i >= 0 && items[i].kind !== "user"; i--) if (items[i].kind === "plan") items.splice(i, 1);
+      items.push({ kind: "plan", entries, live });
+      if (last?.kind === "agent") last.live = false;
       break;
     }
     case "error":

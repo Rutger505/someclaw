@@ -1,6 +1,6 @@
-import { Check, ChevronDown, Wrench, X } from "lucide-react";
+import { Check, ChevronDown, Circle, ListTodo, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { Tool } from "../lib/items";
+import type { PlanEntry, Tool } from "../lib/items";
 
 const ROW = 24; // px, every row is h-6 so the ticker can scroll by whole rows
 const VISIBLE = 3;
@@ -117,5 +117,46 @@ function ToolDetails({ t, live, focused }: { t: Tool; live: boolean; focused: bo
         {t.output !== undefined && `\n\n← ${t.output}`}
       </pre>
     </details>
+  );
+}
+
+/** TodoWrite plan as a checklist; in_progress shows its activeForm, spinning while the turn runs. */
+export function Plan({ entries, live }: { entries: PlanEntry[]; live: boolean }) {
+  const done = entries.filter((e) => e.status === "completed").length;
+  return (
+    <div className="text-xs">
+      <div className="flex h-8 items-center gap-2 text-muted">
+        <ListTodo size={13} />
+        <span className="font-medium">
+          Plan · {done}/{entries.length}
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {entries.map((e, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span className="mt-0.5 flex size-3 shrink-0 items-center justify-center">
+              {e.status === "completed" ? (
+                <Check size={12} strokeWidth={3} className="text-ok" />
+              ) : e.status === "in_progress" ? (
+                live ? (
+                  <span className="size-3 animate-spin rounded-full border-[1.5px] border-warn border-t-transparent" />
+                ) : (
+                  <Circle size={10} strokeWidth={3} className="fill-warn text-warn" />
+                )
+              ) : (
+                <Circle size={10} className="text-faint" />
+              )}
+            </span>
+            <span
+              className={
+                e.status === "completed" ? "text-faint line-through" : e.status === "in_progress" ? "text-fg" : "text-fg-2"
+              }
+            >
+              {e.status === "in_progress" && e.activeForm ? e.activeForm : e.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
