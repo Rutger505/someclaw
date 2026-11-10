@@ -6,7 +6,7 @@ import { IMAGE_TYPES, type Attachment } from "../shared/attachments";
 import { tokenValid } from "./gateway";
 
 const DIR = process.env.SOMECLAW_UPLOAD_DIR ?? `${process.env.HOME}/.zeroclaw/agents/rocky/workspace/uploads`;
-export const MAX_UPLOAD_MB = 50;
+export const MAX_UPLOAD_MB = 60;
 
 const safe = (name: string) =>
   name.normalize("NFKC").replace(/[\/\\\0\n\r\]\[]/g, "_").replace(/^\.+/, "_").replace(/\s+/g, " ").trim().slice(0, 120) || "file";
