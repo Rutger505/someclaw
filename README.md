@@ -44,7 +44,7 @@ git clone git@github.com:Rutger505/someclaw.git ~/.local/share/someclaw
 
 `bin/deploy` from the dev clone: pushes main, runs `someclaw-update.service` right away, checks the live checkout and the service. The server watches `dist/` and pushes the hash of `dist/index.html` over SSE (`/someclaw/events`, also sent on connect, so a restart is caught on reconnect); open pages reload when no turn is running and the input is empty.
 
-Restarts mid-turn: the broker writes each running turn (prompt + tool steps) to `inflight/` in the state dir as it goes. A someclaw restart doesn't stop the turn (the gateway finishes a /ws/chat turn without its socket): the broker reattaches, waits for it to end and files the steps it saw. A ZeroClaw restart kills it and the gateway stores nothing of it: the broker resends the prompt once with those steps (`<cut-off-turn>` block, hidden in the UI), so it continues instead of starting over.
+Restarts mid-turn: the broker writes each running turn (prompt + tool steps) to `inflight/` in the state dir as it goes. A someclaw restart doesn't stop the turn (the gateway finishes a /ws/chat turn without its socket): the broker opens a new gateway socket and sends `attach` (needs zeroclaw ≥ 0.8.7-p5, zeroclaw-patches 0004): the gateway replays the turn's frames so far and streams the rest, so no step is lost. Read-only until it ends (no steering or ask_user answers; stop works). Older gateway: waits for it to end and files the steps it saw before the restart. A ZeroClaw restart kills it and the gateway stores nothing of it: the broker resends the prompt once with those steps (`<cut-off-turn>` block, hidden in the UI), so it continues instead of starting over.
 
 ## Use
 

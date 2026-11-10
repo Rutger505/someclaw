@@ -72,6 +72,14 @@ type Conv = {
   rec?: Inflight;
   /** Gateway socket lost mid-turn: polling the gateway to see whether the turn survived (recover()). */
   recovering?: boolean;
+  /** `attach` sent on a new gateway socket, waiting for `attached`. */
+  attaching?: boolean;
+  /** Frames of the gateway's replay still to come after `attached` (rebuilt silently, then one snapshot). */
+  replay?: number;
+  /** Following a turn a gone gateway socket started: read-only (no steer, no answers), abort still works. */
+  attached?: boolean;
+  /** Attach attempts this turn; gateway without attach (< 0.8.7-p5) or repeated failures: poll instead. */
+  attachTries?: number;
 };
 
 
@@ -301,7 +309,7 @@ function record(c: Conv, event: GatewayEvent) {
   const last = c.turn.at(-1);
   if (event.type === "chunk" && last?.type === "chunk") last.content = String(last.content ?? "") + String(event.content ?? "");
   else c.turn.push({ ...event });
-  emit(c.id, event);
+  if (!c.replay) emit(c.id, event);
 }
 
 /** Gateway socket of a conversation. The model is fixed per socket: a changed choice reopens it between turns. */
@@ -326,7 +334,8 @@ function upstream(c: Conv): Promise<WebSocket> {
       c.up = c.upReady = undefined;
       // Never opened: startTurn's catch fails the turn. Opened: the gateway may still run it (a closed socket doesn't
       // cancel a turn) or it died with a ZeroClaw restart; recover() finds out.
-      if (c.status === "running" && !c.finishing && opened) detach(c, `gateway socket closed mid-turn: ${e.code} ${e.reason}`.trim());
+      if (c.status === "running" && !c.finishing && c.attaching) attachFailed(c, `socket closed ${e.code} ${e.reason}`.trim());
+      else if (c.status === "running" && !c.finishing && opened) detach(c, `gateway socket closed mid-turn: ${e.code} ${e.reason}`.trim());
     };
   });
   c.upReady.catch(() => {});
@@ -356,6 +365,15 @@ function closeWhenIdle(c: Conv) {
 }
 
 function onEvent(c: Conv, m: GatewayEvent) {
+  if (c.attaching && m.type === "attached") return onAttached(c, m);
+  // older gateway: "Unsupported message type"
+  if (c.attaching && m.type === "error") return attachFailed(c, String(m.message ?? JSON.stringify(m)), true);
+  if (!c.replay) return onFrame(c, m);
+  onFrame(c, m); // record() doesn't emit while replaying
+  if (--c.replay === 0) replayed(c);
+}
+
+function onFrame(c: Conv, m: GatewayEvent) {
   if (m.type === "session_start" || m.type === "thinking") return;
   // Broadcast to every open gateway socket, persisted nowhere: only a hint that a run just finished.
   if (m.type === "cron_result") return pollCronNow();
@@ -414,6 +432,8 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   if (c.status !== "running" || c.finishing) return;
   c.finishing = true;
   c.recovering = false;
+  c.attaching = c.attached = false;
+  c.replay = c.attachTries = 0;
   c.rec = undefined;
   dropInflight(c.id);
   const failed = aborted || status === "error";
@@ -490,6 +510,8 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   c.lastFrameAt = c.startedAt = Date.now();
   c.doneAt = undefined;
   c.pending = 0;
+  c.attached = false;
+  c.attachTries = 0;
   if (!session(c.id)?.message_count) state.previews[c.id] ??= previewText(text).slice(0, 200);
   save();
   const { prefix, sent: skills } = await withSkills(c.id);
@@ -508,13 +530,15 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
 }
 
 // ---------- restarts mid-turn ----------
-// someclaw restart: the gateway keeps running the turn (a closed /ws/chat socket doesn't cancel it) and stores the
-// reply; the broker reattaches and files the steps it saw before the restart. Steps after it are lost (the gateway
-// sends them only to the socket that started the turn). ZeroClaw restart: the turn is gone, the gateway stored nothing
-// of it: resent once with the steps it already ran (resendPrompt).
+// someclaw restart or lost gateway socket: the gateway keeps running the turn (a closed /ws/chat socket doesn't cancel
+// it). The broker opens a new socket and sends `attach` (zeroclaw-patches 0004): the gateway replays the turn's frames so
+// far and streams the rest. The turn is rebuilt from that replay (gateway is authoritative), then followed read-only.
+// Gateway without attach: poll until the turn ends, file the steps seen before (later ones lost). ZeroClaw restart:
+// the turn is gone, the gateway stored nothing of it: resent once with the steps it already ran (resendPrompt).
 
 const RECOVER_POLL_MS = 3_000; // gateway up, turn still running there: wait for it to end
 const RECOVER_GIVE_UP_MS = 30 * 60_000; // gateway unreachable this long: stop waiting
+const MAX_ATTACH_TRIES = 3;
 const STEP_TYPES = new Set(["tool_call", "tool_result", "plan"]); // persisted with the turn (gateway history has none)
 
 function keepStep(c: Conv, e: GatewayEvent) {
@@ -546,6 +570,7 @@ async function recover(c: Conv) {
       if (parseTime(daemon_started_at) > rec.startedAt) return await restarted(c, rec, daemon_started_at);
       const running = await api<{ sessions: { session_id: string }[] }>(state.token, "/api/sessions/running");
       if (!running.sessions.some((s) => s.session_id === c.id)) return await reattached(c);
+      if ((c.attachTries ?? 0) < MAX_ATTACH_TRIES) return await attach(c);
     } catch (e) {
       if (msg(e) !== lastError) console.error(`broker: recover ${c.id}: ${(lastError = msg(e))}`);
       if (Date.now() - since > RECOVER_GIVE_UP_MS) return finish(c, "error", `turn lost: gateway unreachable for 30 min (${lastError})`);
@@ -553,6 +578,56 @@ async function recover(c: Conv) {
     }
     await Bun.sleep(wait);
   }
+}
+
+/** Follow the still-running turn on a new gateway socket: onAttached() takes the answer. */
+async function attach(c: Conv) {
+  c.attachTries = (c.attachTries ?? 0) + 1;
+  c.attaching = true;
+  try {
+    dropUpstream(c, "reattach");
+    const up = await upstream(c);
+    up.send(JSON.stringify({ type: "attach" }));
+    const attempt = c.attachTries;
+    setTimeout(() => c.attachTries === attempt && attachFailed(c, "no `attached` frame within 15 s"), 15_000);
+  } catch (e) {
+    attachFailed(c, msg(e));
+  }
+}
+
+/** Attach didn't work: back to polling (recover()), which retries it up to MAX_ATTACH_TRIES. Unsupported: never again. */
+function attachFailed(c: Conv, why: string, unsupported = false) {
+  if (!c.attaching) return;
+  c.attaching = false;
+  if (unsupported) c.attachTries = MAX_ATTACH_TRIES;
+  console.error(`broker: ${c.id}: attach failed (${why}), polling instead`);
+  if (c.attachTries! >= MAX_ATTACH_TRIES) record(c, { type: "notice", message: `reattach failed: ${why}. Waiting for the turn to end; steps until then aren't shown` });
+  setTimeout(() => recover(c), RECOVER_POLL_MS);
+}
+
+function onAttached(c: Conv, m: GatewayEvent) {
+  c.attaching = false;
+  if (!m.running) return void reattached(c); // ended in between
+  c.recovering = false;
+  c.attached = true;
+  const prompt = c.turn[0]?.type === "user" ? c.turn[0] : undefined;
+  c.turn = prompt ? [prompt] : [];
+  c.tools = [];
+  c.pending = 0;
+  c.lastFrameAt = Date.now();
+  if (c.rec) {
+    c.rec.events = [];
+    writeInflight(c.rec);
+  }
+  c.replay = Number(m.replayed) || 0;
+  console.log(`broker: ${c.id}: attached to running turn ${m.turn_id}, ${c.replay} frames replayed`);
+  if (!c.replay) replayed(c);
+}
+
+function replayed(c: Conv) {
+  c.turn.push({ type: "notice", message: "reattached to the running turn: steps above replayed by the gateway, read-only until it ends (stop works)" });
+  void pushSnapshot(c.id);
+  broadcastList();
 }
 
 /** Gateway finished the turn without us: its reply is in the history (finish() reads it and files the steps). */
@@ -568,6 +643,8 @@ async function reattached(c: Conv) {
 async function restarted(c: Conv, rec: Inflight, at: string) {
   if (rec.resent) return finish(c, "error", `cut off by a ZeroClaw restart (${at}) again: resent once already, not again`);
   c.recovering = false;
+  c.attaching = c.attached = false;
+  c.replay = 0;
   const { content, steps } = resendPrompt(rec.sent, rec.events, at);
   console.log(`broker: ${c.id}: ZeroClaw restarted at ${at} mid-turn, resending with ${steps} steps`);
   rec.resent = true;
@@ -598,7 +675,7 @@ function recoverInflight() {
     c.tools = rec.events.filter((e) => STEP_TYPES.has(e.type));
     c.turn = [{ type: "user", content: rec.text, ...(rec.fork && { fork: rec.fork }) }, ...rec.events.map((e) => ({ ...e }))];
     c.recovering = true;
-    c.turn.push({ type: "notice", message: "someclaw restarted mid-turn: reattaching (steps after the restart aren't shown)" });
+    c.turn.push({ type: "notice", message: "someclaw restarted mid-turn: reattaching" });
     console.log(`broker: ${rec.id}: was running when someclaw stopped (${rec.events.length} steps), recovering`);
     recover(c);
   }
@@ -839,6 +916,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
         return startTurn(c, text);
       }
       if (c.recovering) return fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
+      if (c.attached || c.replay) return fail("reattached turn is read-only (ZeroClaw takes steering and answers only from the socket that started it): wait for it, or stop it");
       // rocky is blocked on ask_user: a steer would only land after it times out
       const q = openQuestion(c);
       if (q) {
@@ -863,6 +941,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     case "answer": {
       const c = convs.get(m.id);
       if (!c || c.status !== "running") return fail("answer: no running turn");
+      if (c.attached) return fail("answer: reattached turn is read-only, the question can't be answered from here");
       if (openQuestion(c) !== m.request_id) return fail(`answer: question ${m.request_id} is not open (answered or timed out)`);
       if (!m.answer.trim()) return;
       try {
