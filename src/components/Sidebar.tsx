@@ -1,8 +1,9 @@
-import { Archive, ArchiveRestore, ChevronRight, ExternalLink, Keyboard, MessageCircle, Plus } from "lucide-react";
-import { useState } from "react";
-import type { Conversation } from "../../shared/protocol";
+import { Archive, ArchiveRestore, ChevronRight, CircleAlert, Clock, ExternalLink, Keyboard, Loader, MessageCircle, Plus, Search as SearchIcon, X } from "lucide-react";
+import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import type { Conversation, SearchHit, Usage } from "../../shared/protocol";
 import { DASHBOARD_URL } from "../App";
-import type { Link } from "../lib/broker";
+import type { Link, Search } from "../lib/broker";
+import { until, when } from "../lib/time";
 
 // Real links so Ctrl/Cmd/Shift/middle-click open a new tab/window natively; a plain click stays in-app.
 const inApp = (fn: () => void) => (e: React.MouseEvent) => {
@@ -13,22 +14,46 @@ const inApp = (fn: () => void) => (e: React.MouseEvent) => {
 
 export const convTitle = (c: Conversation) => c.name ?? c.preview ?? (c.channel ? c.channel : "New conversation");
 
-/** running = pulsing amber, waiting (auto-resume after rate limit) = blue, error = red, unread = cyan, idle = nothing. */
-export function StatusDot({ c, className = "" }: { c: Pick<Conversation, "status" | "unread">; className?: string }) {
-  const [color, title] =
-    c.status === "running"
-      ? ["bg-warn animate-pulse", "running"]
-      : c.status === "waiting"
-        ? ["bg-info", "waiting for rate limit reset"]
-        : c.status === "error"
-          ? ["bg-err", "error"]
-          : c.unread
-            ? ["bg-accent shadow-[0_0_8px] shadow-accent/60", "unread"]
-            : ["bg-transparent", "idle"];
-  return <span title={title} className={`inline-block size-1.5 shrink-0 rounded-full ${color} ${className}`} />;
+/** Status as distinct shapes, not just colors: working = spinner, rate-limited = clock (+ queued count), failed = alert,
+ * new reply = solid dot. `compact` (chat header): no reset time next to the clock. */
+export function StatusIcon({ c, compact = false }: { c: Pick<Conversation, "status" | "unread" | "resume" | "error">; compact?: boolean }) {
+  const queued = c.resume?.queued?.length ?? 0;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {c.status === "running" && (
+        <span title="rocky is working">
+          <Loader size={13} className="animate-spin text-warn" />
+        </span>
+      )}
+      {c.status === "waiting" && c.resume && (
+        <span
+          title={`${queued ? `${queued} message${queued === 1 ? "" : "s"} queued` : "rate limited"}, ${c.resume.queuedOnly || queued ? "sends" : "resumes"} ${when(c.resume.at)} (${until(c.resume.at)})\n${c.resume.reason}`}
+          className="flex items-center gap-1 rounded bg-info/10 px-1 font-mono text-[10px] leading-4 text-info"
+        >
+          <Clock size={11} />
+          {!compact && when(c.resume.at)}
+          {queued > 0 && <span className="rounded-sm bg-info/25 px-0.5 text-fg">{queued}</span>}
+        </span>
+      )}
+      {c.status === "error" && (
+        <span title={`turn failed: ${c.error ?? "error"}`}>
+          <CircleAlert size={13} className="text-err" />
+        </span>
+      )}
+      {c.unread && <span title="new reply" className="size-2 rounded-full bg-accent shadow-[0_0_8px] shadow-accent/60" />}
+    </span>
+  );
 }
 
+/** Search box handle: Ctrl+K focuses it. */
+export type SidebarHandle = { search: () => void };
+
 type Props = {
+  usage: Usage | null;
+  found: Search | null;
+  onSearch: (q: string) => void;
+  /** Opens a conversation scrolled to history[at] (a search hit). */
+  onJump: (id: string, at: number) => void;
   list: Conversation[] | null;
   listError: string | null;
   link: Link;
@@ -39,10 +64,16 @@ type Props = {
   onHelp: () => void;
 };
 
-export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchive, onHelp }: Props) {
+export const Sidebar = forwardRef<SidebarHandle, Props>(function Sidebar({ usage, found, onSearch, onJump, list, listError, link, openId, onOpen, onNew, onArchive, onHelp }, ref) {
   const [showArchived, setShowArchived] = useState(false);
+  const [q, setQ] = useState("");
+  const box = useRef<HTMLInputElement>(null);
+  useImperativeHandle(ref, () => ({ search: () => (box.current?.focus(), box.current?.select()) }));
   const active = list?.filter((c) => !c.archived) ?? [];
   const archived = list?.filter((c) => c.archived) ?? [];
+  const query = (v: string) => (setQ(v), onSearch(v));
+  const searching = q.trim().length > 0;
+  const matches = useMemo(() => (searching ? searchList(list ?? [], q, found) : []), [list, q, found, searching]);
 
   return (
     <nav className="flex h-full w-68 shrink-0 flex-col border-r border-line bg-surface">
@@ -70,9 +101,44 @@ export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchiv
         </a>
       </div>
 
+      <div className="px-3 pb-2">
+        <div className="flex h-8 items-center gap-2 rounded-md bg-input px-2.5 ring-1 ring-line focus-within:ring-accent-dim">
+          <SearchIcon size={14} className="shrink-0 text-muted" />
+          <input
+            ref={box}
+            value={q}
+            onChange={(e) => query(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                if (q) query("");
+                else box.current?.blur();
+              } else if (e.key === "Enter" && matches[0]) {
+                const m = matches[0];
+                if (m.hits[0]) onJump(m.c.id, m.hits[0].at);
+                else onOpen(m.c.id);
+              }
+            }}
+            placeholder="Search titles + messages"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-faint"
+          />
+          {q ? (
+            <button onClick={() => query("")} title="Clear (Esc)" className="text-muted hover:text-fg">
+              <X size={14} />
+            </button>
+          ) : (
+            <Kbd>Ctrl K</Kbd>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto px-3 pb-3">
         {listError && <p className="mb-2 rounded-md bg-err/10 px-2.5 py-2 font-mono text-xs break-words text-err">{listError}</p>}
         {list === null && !listError && <p className="px-2.5 py-1.5 text-sm text-muted">Loading…</p>}
+        {searching ? (
+          <Results q={q} found={found} matches={matches} openId={openId} onOpen={onOpen} onJump={onJump} />
+        ) : (
+        <>
         <div className="flex flex-col gap-0.5">
           {active.map((c, i) => (
             <Row key={c.id} c={c} n={i < 9 ? i + 1 : null} open={c.id === openId} onOpen={onOpen} onArchive={onArchive} />
@@ -97,7 +163,11 @@ export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchiv
             )}
           </>
         )}
+        </>
+        )}
       </div>
+
+      {usage && <UsagePanel usage={usage} />}
 
       <div className="flex items-center gap-1 border-t border-line p-3">
         <a
@@ -114,6 +184,104 @@ export function Sidebar({ list, listError, link, openId, onOpen, onNew, onArchiv
         </IconButton>
       </div>
     </nav>
+  );
+});
+
+type Match = { c: Conversation; title: boolean; hits: SearchHit[]; total: number };
+
+/** Title matches (in the browser, instant) + message hits (server), title matches first, then newest activity. */
+function searchList(list: Conversation[], q: string, found: Search | null): Match[] {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const byId = new Map((found?.results ?? []).map((r) => [r.id, r]));
+  const out: Match[] = [];
+  for (const c of list) {
+    const title = terms.every((t) => convTitle(c).toLowerCase().includes(t));
+    const r = byId.get(c.id);
+    if (title || r) out.push({ c, title, hits: r?.hits ?? [], total: r?.total ?? 0 });
+  }
+  return out.sort((a, b) => Number(b.title) - Number(a.title) || b.c.last_activity.localeCompare(a.c.last_activity));
+}
+
+function Mark({ text, q }: { text: string; q: string }) {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return <>{text}</>;
+  const esc = (t: string) => t.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+  const re = new RegExp(`(${terms.map(esc).join("|")})`, "gi");
+  return (
+    <>
+      {text.split(re).map((part, i) => (i % 2 ? <mark key={i} className="rounded-sm bg-accent/25 text-fg">{part}</mark> : part))}
+    </>
+  );
+}
+
+function Results({ q, found, matches, openId, onOpen, onJump }: { q: string; found: Search | null; matches: Match[]; openId: string; onOpen: (id: string) => void; onJump: (id: string, at: number) => void }) {
+  return (
+    <div className="flex flex-col gap-1">
+      {found?.error && <p className="rounded-md bg-err/10 px-2.5 py-2 font-mono text-xs break-words text-err">search: {found.error}</p>}
+      {q.trim().length < 2 && <p className="px-2.5 py-1 text-xs text-faint">Titles only below 2 characters</p>}
+      {matches.map((m) => (
+        <div key={m.c.id} className={`rounded-md ${m.c.id === openId ? "bg-elevated" : ""}`}>
+          <a
+            href={`#${encodeURIComponent(m.c.id)}`}
+            onClick={inApp(() => onOpen(m.c.id))}
+            className="flex h-8 items-center gap-2 rounded-md px-2.5 text-sm text-fg-2 hover:bg-elevated/60 hover:text-fg"
+          >
+            <span className={`flex-1 truncate ${m.c.unread ? "font-medium text-fg" : ""}`}>
+              <Mark text={convTitle(m.c)} q={m.title ? q : ""} />
+            </span>
+            {m.c.archived && <Archive size={12} className="shrink-0 text-faint" />}
+            {m.c.channel ? <MessageCircle size={13} className="shrink-0 text-muted" /> : <StatusIcon c={m.c} />}
+          </a>
+          {m.hits.map((h) => (
+            <a
+              key={h.at}
+              href={`#${encodeURIComponent(m.c.id)}`}
+              onClick={inApp(() => onJump(m.c.id, h.at))}
+              className="mb-0.5 ml-2.5 block rounded-md border-l-2 border-line px-2 py-1 text-xs leading-snug text-muted hover:border-accent-dim hover:bg-elevated/60 hover:text-fg-2"
+            >
+              <span className="line-clamp-2">
+                <span className="mr-1 font-medium text-faint">{h.role === "user" ? "you" : "rocky"}</span>
+                <Mark text={h.snippet} q={q} />
+              </span>
+            </a>
+          ))}
+          {m.total > m.hits.length && <p className="mb-1 ml-5 text-[11px] text-faint">+{m.total - m.hits.length} more</p>}
+        </div>
+      ))}
+      {!matches.length && !found?.loading && <p className="px-2.5 py-1.5 text-sm text-muted">No results found.</p>}
+      {found?.loading && <p className="px-2.5 py-1 text-xs text-faint">Searching messages…</p>}
+    </div>
+  );
+}
+
+/** Anthropic plan usage (polled by the broker every 5 min while a browser is open). */
+function UsagePanel({ usage }: { usage: Usage }) {
+  const updated = usage.at ? `updated ${when(usage.at)}` : "never loaded";
+  const extra = usage.extra?.enabled && usage.extra.used > 0 ? usage.extra : null;
+  return (
+    <div className="flex flex-col gap-2 border-t border-line px-4 py-3" title={`Claude plan usage (same account as ZeroClaw), ${updated}`}>
+      {usage.windows.map((w) => {
+        const tone = w.percent >= 100 ? "bg-err" : w.percent >= 80 ? "bg-warn" : "bg-accent";
+        return (
+          <div key={w.key} className="flex flex-col gap-1" title={w.resets_at ? `${w.label}: ${w.percent}%, resets ${new Date(w.resets_at).toLocaleString()}` : undefined}>
+            <div className="flex items-baseline gap-2 text-xs">
+              <span className="text-fg-2">{w.label}</span>
+              <span className={`font-mono ${w.percent >= 100 ? "text-err" : w.percent >= 80 ? "text-warn" : "text-muted"}`}>{Math.round(w.percent)}%</span>
+              {w.resets_at && <span className="ml-auto text-faint">resets {when(w.resets_at)}</span>}
+            </div>
+            <div className="h-1 overflow-hidden rounded-full bg-elevated">
+              <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.min(100, Math.max(0, w.percent))}%` }} />
+            </div>
+          </div>
+        );
+      })}
+      {extra && (
+        <p className="text-xs text-faint">
+          Extra usage: {extra.used.toLocaleString(undefined, { style: "currency", currency: extra.currency || "EUR" })} this month
+        </p>
+      )}
+      {usage.error && <p className="font-mono text-[11px] break-words text-err">usage: {usage.error}</p>}
+    </div>
   );
 }
 
@@ -133,8 +301,9 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
       </span>
       <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
       {(c.channel || c.status !== "idle" || c.unread) && (
-        <span className="flex shrink-0 items-center group-hover:hidden">
-          {c.channel ? <MessageCircle size={14} className="text-muted" /> : <StatusDot c={c} />}
+        <span className="flex shrink-0 items-center gap-1.5 group-hover:hidden">
+          {c.channel && <MessageCircle size={14} className="text-muted" />}
+          <StatusIcon c={c} />
         </span>
       )}
       <button

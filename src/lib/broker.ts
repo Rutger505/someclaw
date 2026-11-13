@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMsg, Conversation, GatewayEvent, ServerMsg, ToolLog, HistoryMessage, TurnModel } from "../../shared/protocol";
+import type { ClientMsg, Conversation, GatewayEvent, ServerMsg, ToolLog, HistoryMessage, TurnModel, Usage, SearchResult } from "../../shared/protocol";
 import { getToken } from "./gateway";
 
 export type Snapshot = { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null; skills: string[] };
 export type Link = "connecting" | "open" | "closed";
+export type Search = { q: string; results: SearchResult[]; error: string | null; loading: boolean };
 
 /** One /someclaw/ws socket to the broker: conversation list for the sidebar + the open conversation. */
 export function useBroker(openId: string, onUnauthorized: () => void) {
@@ -11,6 +12,9 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
   const [listError, setListError] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [link, setLink] = useState<Link>("connecting");
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [found, setFound] = useState<Search | null>(null);
+  const seq = useRef(0);
   const [errors, setErrors] = useState<{ at: number; message: string; link?: true }[]>([]);
   const ws = useRef<WebSocket>(null);
   const openRef = useRef(openId);
@@ -70,6 +74,12 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
               return { ...s, turn: [...s.turn, ev] };
             });
             break;
+          case "usage":
+            setUsage(m.usage);
+            break;
+          case "search":
+            if (m.seq === seq.current) setFound({ q: m.q, results: m.results, error: m.error, loading: false });
+            break;
           case "error":
             setErrors((x) => [...x, { at: Date.now(), message: m.message }]);
             break;
@@ -93,6 +103,20 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "subscribe", id: openId } satisfies ClientMsg));
   }, [openId]);
 
+  // Message search (server/search.ts); titles are matched in the browser. Debounced, latest query wins.
+  const searchTimer = useRef<Timer>(undefined);
+  const search = useCallback((q: string) => {
+    clearTimeout(searchTimer.current);
+    const n = ++seq.current;
+    if (q.trim().length < 2) return setFound(null);
+    setFound((f) => ({ q, results: f?.results ?? [], error: null, loading: true }));
+    searchTimer.current = setTimeout(() => {
+      if (n !== seq.current) return;
+      if (ws.current?.readyState !== WebSocket.OPEN) return setFound({ q, results: [], error: "not connected", loading: false });
+      ws.current.send(JSON.stringify({ type: "search", q: q.trim(), seq: n } satisfies ClientMsg));
+    }, 150);
+  }, []);
+
   const dismissError = (at: number) => setErrors((x) => x.filter((e) => e.at !== at));
-  return { list, listError, snap, link, errors, dismissError, send };
+  return { list, listError, snap, link, errors, dismissError, send, usage, found, search };
 }

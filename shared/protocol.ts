@@ -6,7 +6,7 @@
  * replayed turn shows them. */
 export type GatewayEvent = { type: string; [k: string]: unknown };
 
-/** waiting = rate-limited, the broker resumes the turn itself at `resume.at`. */
+/** waiting = rate-limited, the broker resumes the turn (or sends the queued messages) itself at `resume.at`. */
 export type ConvStatus = "idle" | "running" | "error" | "waiting";
 
 export type Resume = {
@@ -16,7 +16,26 @@ export type Resume = {
   attempt: number;
   /** Attempts before the broker gives up (absent in waits saved by older versions). */
   max?: number;
+  /** Messages typed while rate-limited: sent as one message at `at`. */
+  queued?: string[];
+  /** No failed turn to continue: only queued messages (sent while a usage window was full). */
+  queuedOnly?: true;
 };
+
+/** Anthropic plan usage (Claude Code's /usage endpoint, same account as ZeroClaw). */
+export type UsageWindow = { key: string; label: string; percent: number; resets_at: string | null };
+export type Usage = {
+  windows: UsageWindow[];
+  /** Extra usage credits (pay-as-you-go past the plan limits); used in the currency's minor unit / 10^decimals. */
+  extra: { enabled: boolean; used: number; currency: string } | null;
+  /** Last successful poll; error: last poll's failure (windows then from the poll before). */
+  at: string | null;
+  error: string | null;
+};
+
+/** A message (or the title) matching a search. at: history index; snippet: text around the first hit. */
+export type SearchHit = { at: number; role: "user" | "assistant"; snippet: string };
+export type SearchResult = { id: string; hits: SearchHit[]; total: number };
 
 export type Conversation = {
   id: string;
@@ -84,7 +103,13 @@ export type ClientMsg =
   | { type: "answer"; id: string; request_id: string; answer: string }
   /** Continue read-only channel session `from` in new conversation `id`: `text` plus that thread as context. */
   | { type: "fork"; from: string; id: string; text: string }
-  /** Running: stops the turn. Waiting: cancels the auto-resume. */
+  /** Waiting (rate-limited): resume / send the queued messages now instead of at the reset. */
+  | { type: "flush"; id: string }
+  /** Waiting: drop queued message `index` (the UI puts it back in the composer). */
+  | { type: "unqueue"; id: string; index: number }
+  /** Full-text search in user messages and rocky's replies (not tool calls). seq: echoed back, newest wins. */
+  | { type: "search"; q: string; seq: number }
+  /** Running: stops the turn. Waiting: cancels the auto-resume and drops queued messages. */
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "rename"; id: string; name: string }
@@ -104,14 +129,23 @@ export type ServerMsg =
       /** Skills pinned in this conversation (read_skill earlier on), sent along with the next message when not in context. */
       skills: string[] }
   | { type: "event"; id: string; event: GatewayEvent }
+  | { type: "usage"; usage: Usage }
+  | { type: "search"; seq: number; q: string; results: SearchResult[]; error: string | null }
   | { type: "error"; message: string }
   | { type: "unauthorized" };
 
 /** The runtime prefixes user messages with the date (gateway: [CURRENT DATE & TIME: ...], channels: [2026-...]); noise in a chat UI. */
 export const stripDatePrefix = (s: string) => s.replace(/^\[(CURRENT DATE & TIME: [^\]]*|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [^\]]*)\]\s*/, "");
 
-/** Sent by the broker to resume a rate-limited turn (the failed message is already in the history). */
+/** Sent by the broker to resume a rate-limited turn (the failed message is already in the history). Messages queued
+ * meanwhile follow it after a blank line. */
 export const RESUME_TEXT = "[someclaw] Rate limit reset: continue where you left off.";
+
+export function parseResume(content: string): { resume: boolean; text: string } {
+  if (content === RESUME_TEXT) return { resume: true, text: "" };
+  if (content.startsWith(`${RESUME_TEXT}\n\n`)) return { resume: true, text: content.slice(RESUME_TEXT.length + 2) };
+  return { resume: false, text: content };
+}
 
 // Fork context block, first thing in the forked conversation's first message. The model reads it; the UI hides it.
 const FORK_OPEN = (r: ForkRef) => `<continued-from id="${r.id}" channel="${r.channel}" messages="${r.messages}">`;

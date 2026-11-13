@@ -5,7 +5,7 @@ import { useVersionReload } from "./lib/useVersionReload";
 import { useBroker } from "./lib/broker";
 import { COMPOSER_KEYS, KEYMAP, useShortcuts } from "./lib/shortcuts";
 import { Chat, type ChatHandle } from "./components/Chat";
-import { Kbd, Sidebar } from "./components/Sidebar";
+import { Kbd, Sidebar, type SidebarHandle } from "./components/Sidebar";
 import { ReloadBanner } from "./components/ReloadBanner";
 
 export const DASHBOARD_URL = "https://zeroclaw.homelab.rutgerpronk.com";
@@ -33,7 +33,10 @@ const newId = () => crypto.randomUUID();
 
 function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [openId, setOpenId] = useState(() => hashId() || newId());
-  const { list, listError, snap, link, errors, dismissError, send } = useBroker(openId, onUnauthorized);
+  const { list, listError, snap, link, errors, dismissError, send, usage, found, search } = useBroker(openId, onUnauthorized);
+  /** Search hit to scroll to once that conversation's history is in; n: a repeat click scrolls again. */
+  const [jump, setJump] = useState<{ id: string; at: number; n: number } | null>(null);
+  const side = useRef<SidebarHandle>(null);
   const [sidebar, setSidebar] = useState(() => localStorage.getItem("sidebar") !== "0" && innerWidth >= 768);
   const [help, setHelp] = useState(false);
   const [draftEmpty, setDraftEmpty] = useState(true);
@@ -88,6 +91,8 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
         if (help) return setHelp(false);
         if (document.activeElement instanceof HTMLInputElement) return false; // rename field handles its own Esc
         if (conv?.status !== "running" && conv?.status !== "waiting") return false;
+        // queued messages: only the card's cancel drops them (and puts them back in the composer)
+        if (conv.status === "waiting" && conv.resume?.queued?.length) return false;
         return send({ type: "abort", id: openId });
       case "sidebar":
         return setSidebar((x) => !x);
@@ -95,6 +100,10 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
         return chat.current?.focus();
       case "continue":
         return chat.current?.unlock() ? undefined : false;
+      case "search":
+        if (side.current) return side.current.search();
+        setSidebar(true);
+        return void requestAnimationFrame(() => side.current?.search());
       case "help":
         return setHelp((x) => !x);
     }
@@ -109,6 +118,14 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
       {sidebar && (
         <div className="absolute inset-y-0 left-0 z-20 shadow-2xl md:static md:shadow-none">
           <Sidebar
+            ref={side}
+            usage={usage}
+            found={found}
+            onSearch={search}
+            onJump={(id, at) => {
+              open(id);
+              setJump((j) => ({ id, at, n: (j?.n ?? 0) + 1 }));
+            }}
             list={list}
             listError={listError}
             link={link}
@@ -122,7 +139,20 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
       )}
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <ReloadBanner busy={!!list?.some((c) => c.status === "running")} />
-        <Chat ref={chat} id={openId} conv={conv} snap={snap} send={send} onDraft={setDraftEmpty} onToggleSidebar={() => setSidebar((x) => !x)} onOpen={open} />
+        <Chat
+          ref={chat}
+          id={openId}
+          conv={conv}
+          snap={snap}
+          send={send}
+          usage={usage}
+          jump={jump?.id === openId ? jump : null}
+          onDraft={setDraftEmpty}
+          onToggleSidebar={() => setSidebar((x) => !x)}
+          onOpen={open}
+          // overlay sidebar (narrow screens) covers the composer the files went into
+          onDropped={() => innerWidth < 768 && setSidebar(false)}
+        />
       </div>
 
       {errors.length > 0 && (

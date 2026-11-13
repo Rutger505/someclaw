@@ -1,12 +1,13 @@
-import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, CircleHelp, Clock, Copy, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, CircleHelp, Clock, Copy, Pencil, Send, Upload, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
-import type { ClientMsg, Conversation, Resume, TurnModel } from "../../shared/protocol";
+import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
+import type { ClientMsg, Conversation, Resume, TurnModel, Usage } from "../../shared/protocol";
+import { until, when } from "../lib/time";
 import type { Snapshot } from "../lib/broker";
 import { uploadFile } from "../lib/gateway";
 import { buildItems, type Item } from "../lib/items";
 import { Markdown } from "./Markdown";
-import { convTitle, IconButton, Kbd, StatusDot } from "./Sidebar";
+import { convTitle, IconButton, Kbd, StatusIcon } from "./Sidebar";
 import { Plan, ToolGroup } from "./Tools";
 import { ModelSelector } from "./ModelSelector";
 
@@ -22,6 +23,11 @@ type Props = {
   onToggleSidebar: () => void;
   /** Opens another conversation (a fork right after sending it). */
   onOpen: (id: string) => void;
+  usage: Usage | null;
+  /** Search hit: scroll to history[at] once loaded. */
+  jump: { at: number; n: number } | null;
+  /** Files were dropped anywhere on the page (into this composer). */
+  onDropped: () => void;
 };
 
 /** One content width for messages and composer, so their edges line up. */
@@ -30,7 +36,7 @@ const COLUMN = "mx-auto w-full max-w-3xl px-6";
 /** A composer attachment: uploads as soon as it's added, sent as a media marker once done. */
 type Pending = { key: string; name: string; image: boolean; file?: Attachment; error?: string };
 
-export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar, onOpen }, ref) {
+export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar, onOpen, usage, jump, onDropped }, ref) {
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -83,6 +89,60 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     if (stick.current && log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [items]);
 
+  // Search hit: scroll to that message and flash it, once its history is rendered.
+  const jumped = useRef<number | null>(null);
+  useEffect(() => {
+    if (!jump || jumped.current === jump.n || !items.length) return;
+    const el = log.current?.querySelector<HTMLElement>(`[data-at="${jump.at}"]`);
+    if (!el) return;
+    jumped.current = jump.n;
+    stick.current = false;
+    el.scrollIntoView({ block: el.offsetHeight > (log.current?.clientHeight ?? 0) / 2 ? "start" : "center" });
+    el.animate([{ boxShadow: "0 0 0 2px var(--color-accent)" }, { boxShadow: "0 0 0 2px transparent" }], { duration: 1800, easing: "ease-out" });
+  }, [jump, items]);
+
+  // Files dropped anywhere on the page land here, also with the overlay sidebar or a dialog over the composer.
+  // Re-registered every render (fresh addFiles/readOnly); the enter/leave count lives in a ref so that survives it.
+  const dragDepth = useRef(0);
+  useEffect(() => {
+    const files = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
+    const enter = (e: DragEvent) => {
+      if (!files(e)) return;
+      dragDepth.current++;
+      setDragging(true);
+    };
+    const over = (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault(); // else the browser opens the file
+      e.dataTransfer!.dropEffect = "copy";
+    };
+    const leave = (e: DragEvent) => {
+      if (!files(e) || --dragDepth.current > 0) return;
+      dragDepth.current = 0;
+      setDragging(false);
+    };
+    const drop = (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      if (!e.dataTransfer!.files.length) return;
+      if (readOnly) setUnlocked(true); // dropping is deliberate enough: continue the thread here
+      addFiles(e.dataTransfer!.files);
+      onDropped();
+    };
+    addEventListener("dragenter", enter);
+    addEventListener("dragover", over);
+    addEventListener("dragleave", leave);
+    addEventListener("drop", drop);
+    return () => {
+      removeEventListener("dragenter", enter);
+      removeEventListener("dragover", over);
+      removeEventListener("dragleave", leave);
+      removeEventListener("drop", drop);
+    };
+  });
+
   const uploading = files.some((f) => !f.file && !f.error);
   const failed = files.some((f) => f.error);
   const canSend = (!!draft.trim() || files.length > 0) && !uploading && !failed;
@@ -99,7 +159,18 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     input.current?.focus();
   };
 
-  /** Idle: starts a turn. While rocky works: steers it (no queue). Channel sessions: forks into a new conversation. */
+  // A usage window is full: the broker holds new messages until it resets (also when this conversation waits already).
+  const full = useMemo(() => {
+    let latest: { label: string; at: string } | null = null;
+    for (const w of usage?.windows ?? [])
+      if (w.percent >= 100 && w.resets_at && Date.parse(w.resets_at) > Date.now() && (!latest || w.resets_at > latest.at)) latest = { label: w.label, at: w.resets_at };
+    return latest;
+  }, [usage]);
+  const queues = !readOnly && !running && !!full;
+  /** Puts queued text back in the composer (cancel / edit), before what's typed there. */
+  const restore = (texts: string[]) => setDraft((d) => [...texts, d].filter((x) => x.trim()).join("\n\n"));
+
+  /** Idle: starts a turn (or queues it while a usage window is full). While rocky works: steers it. Channel sessions: forks. */
   const submit = () => {
     if (!canSend) return;
     const text = withAttachments(draft.trim(), files.map((f) => f.file!));
@@ -139,7 +210,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           </form>
         ) : (
           <div className="flex min-w-0 flex-1 items-center gap-2.5 pl-1">
-            {conv && <StatusDot c={conv} />}
+            {conv && <StatusIcon c={conv} compact />}
             <span
               className="truncate text-sm font-medium"
               onDoubleClick={() => conv && !readOnly && setRenaming(conv.name ?? "")}
@@ -191,11 +262,12 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           {conv?.titleError && <Banner label="Auto-title failed" text={conv.titleError} />}
           {snap?.historyError && <Banner label="History failed to load" text={snap.historyError} />}
           {!snap && <p className="text-sm text-muted">Loading…</p>}
-          {snap && !items.length && <Empty />}
+          {snap && !items.length && !conv?.resume?.queued?.length && <Empty />}
           {items.map((item, i) => (
             <Row
               key={i}
               item={item}
+              anchor={"at" in item ? item.at : undefined}
               onAnswer={(request_id, answer) => send({ type: "answer", id, request_id, answer })}
               // Reset to here: own conversations, between turns, only with something below to delete.
               reset={
@@ -206,7 +278,21 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             />
           ))}
           {conv?.error && !running && <Banner label="Turn failed" text={conv.error} />}
-          {conv?.resume && !running && <Waiting resume={conv.resume} onCancel={() => send({ type: "abort", id })} />}
+          {conv?.resume && !running && (
+            <Waiting
+              resume={conv.resume}
+              onCancel={() => {
+                restore(conv.resume?.queued ?? []);
+                send({ type: "abort", id });
+              }}
+              onNow={() => send({ type: "flush", id })}
+              onEdit={(i) => {
+                restore([conv.resume!.queued![i]!]);
+                send({ type: "unqueue", id, index: i });
+                input.current?.focus();
+              }}
+            />
+          )}
           {running && !asking && items.at(-1)?.kind !== "agent" && <Thinking />}
         </div>
       </div>
@@ -216,20 +302,6 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
         onSubmit={(e) => {
           e.preventDefault();
           submit();
-        }}
-        onDragOver={(e) => {
-          if (locked || !e.dataTransfer.types.includes("Files")) return;
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
-        }}
-        onDrop={(e) => {
-          setDragging(false);
-          if (locked || !e.dataTransfer.files.length) return;
-          e.preventDefault();
-          addFiles(e.dataTransfer.files);
         }}
       >
         {locked ? (
@@ -273,7 +345,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                   setUnlocked(false); // back to read-only
                 }
               }}
-              placeholder={readOnly ? "Continue in a new someclaw conversation…" : asking ? "Answer rocky…" : running ? "Steer rocky…" : "Message rocky…"}
+              placeholder={readOnly ? "Continue in a new someclaw conversation…" : asking ? "Answer rocky…" : running ? "Steer rocky…" : queues ? "Queue a message for rocky…" : "Message rocky…"}
               className="field-sizing-content block max-h-64 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none placeholder:text-faint disabled:opacity-50"
             />
             <div className="flex items-center gap-2 px-3 pb-2.5">
@@ -282,7 +354,9 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                   ? "Enter continues in a new conversation with this thread as context · Esc locks again"
                   : running
                     ? "rocky is working · Enter steers · Esc stops"
-                    : "Enter to send · Shift+Enter new line"}
+                    : queues
+                      ? `${full!.label} limit full · Enter queues until ${when(full!.at)} (${until(full!.at)})`
+                      : "Enter to send · Shift+Enter new line"}
               </span>
               <div className="ml-auto flex items-center gap-1.5">
                 <input
@@ -314,17 +388,30 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                   </button>
                 )}
                 <button
-                  title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : "Send (Enter)"}
+                  title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : queues ? `Queue until ${when(full!.at)} (Enter)` : "Send (Enter)"}
                   disabled={!canSend}
                   className="grid size-8 place-items-center rounded-full bg-accent text-base transition-colors hover:bg-accent-light disabled:bg-elevated disabled:text-faint"
                 >
-                  {readOnly ? <GitBranch size={16} strokeWidth={2.5} /> : running ? <CornerDownRight size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
+                  {readOnly ? <GitBranch size={16} strokeWidth={2.5} /> : running ? <CornerDownRight size={16} strokeWidth={2.5} /> : queues ? <Clock size={16} strokeWidth={2.5} /> : <ArrowUp size={17} strokeWidth={2.5} />}
                 </button>
               </div>
             </div>
           </div>
         )}
       </form>
+
+      {dragging && (
+        <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center bg-base/75 p-6 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-accent bg-surface/90 px-10 py-8 text-center shadow-2xl shadow-black/40">
+            <Upload size={28} className="text-accent" />
+            <p className="font-medium">Drop to attach</p>
+            <p className="max-w-xs truncate text-sm text-muted">
+              {conv ? convTitle(conv) : "New conversation"}
+              {readOnly ? " · continues in a new conversation" : ""}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -355,7 +442,19 @@ function Locked({ channel, onUnlock }: { channel: string; onUnlock: () => void }
 
 type Reset = { below: number; run: () => void };
 
-function Row({ item, reset, onAnswer }: { item: Item; reset?: Reset; onAnswer: (requestId: string, answer: string) => void }) {
+type RowProps = { item: Item; reset?: Reset; onAnswer: (requestId: string, answer: string) => void };
+
+/** anchor: history index, as data-at for scrolling to a search hit. */
+function Row({ anchor, ...props }: RowProps & { anchor?: number }) {
+  if (anchor === undefined) return <RowBody {...props} />;
+  return (
+    <div data-at={anchor} className="scroll-mt-6 rounded-2xl">
+      <RowBody {...props} />
+    </div>
+  );
+}
+
+function RowBody({ item, reset, onAnswer }: RowProps) {
   switch (item.kind) {
     case "user": {
       const { files, text } = splitAttachments(item.text);
@@ -567,28 +666,57 @@ function Banner({ label, text }: { label?: string; text: string }) {
   );
 }
 
-/** Rate-limited: the broker resumes the turn itself at resume.at. */
-function Waiting({ resume, onCancel }: { resume: Resume; onCancel: () => void }) {
-  const at = new Date(resume.at);
-  const sameDay = at.toDateString() === new Date().toDateString();
-  const when = at.toLocaleString(undefined, sameDay ? { timeStyle: "short" } : { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+/** Rate-limited: the broker resumes the turn (and/or sends the queued messages) itself at resume.at. */
+function Waiting({ resume, onCancel, onNow, onEdit }: { resume: Resume; onCancel: () => void; onNow: () => void; onEdit: (index: number) => void }) {
+  const queued = resume.queued ?? [];
+  const verb = resume.queuedOnly ? `Sends ${queued.length === 1 ? "it" : `these ${queued.length}`}` : queued.length ? "Resumes + sends these" : "Resumes automatically";
   return (
-    <div className="flex gap-2.5 rounded-xl border border-info/25 bg-info/[0.06] px-3.5 py-2.5 text-sm">
-      <Clock size={16} className="mt-0.5 shrink-0 text-info" />
-      <div className="min-w-0 flex-1">
-        <p className="font-medium text-fg">
-          Resumes automatically {sameDay ? "at" : "on"} {when}
-          <span className="font-normal text-muted"> · attempt {resume.attempt}{resume.max ? `/${resume.max}` : ""}</span>
-        </p>
-        <p className="font-mono text-xs break-words text-fg-2">{resume.reason}</p>
+    <div className="flex flex-col gap-2">
+      {queued.map((q, i) => (
+        <div key={i} className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
+          <span className="flex items-center gap-1 text-xs text-info">
+            <Clock size={12} /> queued · sends {when(resume.at)}
+          </span>
+          <div className="max-w-full rounded-2xl rounded-br-md border border-dashed border-info/40 bg-info/[0.06] px-4 py-2.5 whitespace-pre-wrap wrap-anywhere text-fg-2">
+            {previewText(q)}
+          </div>
+          <button
+            onClick={() => onEdit(i)}
+            title="Take it out of the queue, back into the composer"
+            className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted opacity-0 transition-colors group-hover:opacity-100 hover:bg-elevated hover:text-fg pointer-coarse:opacity-100"
+          >
+            <Pencil size={13} /> Edit
+          </button>
+        </div>
+      ))}
+      <div className="flex items-center gap-2.5 rounded-xl border border-info/25 bg-info/[0.06] px-3.5 py-2.5 text-sm">
+        <Clock size={16} className="shrink-0 text-info" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-fg">
+            {verb} {when(resume.at)}
+            <span className="font-normal text-muted">
+              {" "}
+              · {until(resume.at)}
+              {!resume.queuedOnly && ` · attempt ${resume.attempt}${resume.max ? `/${resume.max}` : ""}`}
+            </span>
+          </p>
+          <p className="font-mono text-xs break-words text-fg-2">{resume.reason}</p>
+        </div>
+        <button
+          onClick={onNow}
+          title="Send now instead of waiting for the reset (fails again if the limit is still hit)"
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-elevated hover:text-fg"
+        >
+          <Send size={13} /> Now
+        </button>
+        <button
+          onClick={onCancel}
+          title={queued.length ? "Cancel: queued messages go back into the composer" : "Cancel auto-resume (Esc)"}
+          className="-mr-1 grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-line-strong hover:text-fg"
+        >
+          <X size={14} />
+        </button>
       </div>
-      <button
-        onClick={onCancel}
-        title="Cancel auto-resume (Esc)"
-        className="-mr-1 grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-line-strong hover:text-fg"
-      >
-        <X size={14} />
-      </button>
     </div>
   );
 }

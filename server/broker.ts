@@ -20,7 +20,8 @@ import { clearDeadTurns, parseTime, truncateSession } from "./sessions";
 import { generateTitle, TITLE_PREFIX } from "./title";
 import { pollCronNow, startCronPoller, trackCron } from "./cron";
 import { pinnedSkills, skillsPrompt, unpinSkill } from "./skills";
-import { rateLimitReset } from "./usage";
+import { fullUntil, onUsage, pollUsage, rateLimitReset, startUsagePoller, usage } from "./usage";
+import { search } from "./search";
 import { previewText } from "../shared/attachments";
 import {
   RESUME_TEXT,
@@ -136,9 +137,9 @@ function toConversation(id: string, s: GatewaySession | undefined): Conversation
 
 function conversations(): Conversation[] {
   const list = sessions.map((s) => toConversation(s.session_id, s)).filter((c) => c.message_count || c.status !== "idle");
-  // Started here but not listed by the gateway yet.
-  for (const c of convs.values())
-    if (!session(c.id) && c.status !== "idle") list.push(toConversation(c.id, undefined));
+  // Started here but not listed by the gateway yet (or only queued so far).
+  const ids = new Set([...[...convs.values()].filter((c) => c.status !== "idle").map((c) => c.id), ...Object.keys(state.resume)]);
+  for (const id of ids) if (!session(id)) list.push(toConversation(id, undefined));
   // Newest first by creation: stable order, so Ctrl+1-9 don't shift while conversations are active.
   return list.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
@@ -774,13 +775,33 @@ function resumeNow(id: string) {
   resumeTimers.delete(id);
   if (!state.resume[id]) return;
   if (id in state.archived) return void cancelResume(id); // waits from before archiving existed
-  resumeAttempts.set(id, Math.max(resumeAttempts.get(id) ?? 0, state.resume[id].attempt));
+  const r = state.resume[id];
+  resumeAttempts.set(id, Math.max(resumeAttempts.get(id) ?? 0, r.attempt));
   delete state.resume[id];
   save();
   const c = conv(id);
   if (c.status === "running") return;
-  console.log(`broker: resuming ${id}`);
-  startTurn(c, RESUME_TEXT);
+  const queued = (r.queued ?? []).join("\n\n");
+  console.log(`broker: resuming ${id}${r.queued?.length ? ` with ${r.queued.length} queued message(s)` : ""}`);
+  startTurn(c, r.queuedOnly ? queued : queued ? `${RESUME_TEXT}\n\n${queued}` : RESUME_TEXT);
+}
+
+/** Message while a usage window is full: held until it resets instead of failing (and costing an attempt) now.
+ * Joins the conversation's wait when it has one. False: nothing is full, send it now. */
+function queueMessage(id: string, text: string) {
+  const reset = fullUntil();
+  if (!reset || Date.parse(reset.at) <= Date.now()) return false;
+  const r = state.resume[id];
+  if (r) (r.queued ??= []).push(text);
+  else {
+    const at = new Date(Date.parse(reset.at) + RESUME_MARGIN_MS).toISOString();
+    state.resume[id] = { at, reason: `${reset.window} usage at 100%, resets ${reset.at}: queued until then`, attempt: 0, max: MAX_RESUME_ATTEMPTS, queued: [text], queuedOnly: true };
+    if (!session(id)?.message_count) state.previews[id] ??= previewText(text).slice(0, 200);
+    armResume(id);
+  }
+  save();
+  console.log(`broker: ${id}: message queued until ${state.resume[id]!.at} (${state.resume[id]!.queued!.length} queued)`);
+  return true;
 }
 
 function cancelResume(id: string) {
@@ -794,6 +815,13 @@ function cancelResume(id: string) {
 }
 
 for (const id of Object.keys(state.resume)) armResume(id);
+
+// Usage for the sidebar, and what queueMessage decides on. Polled while a browser is open or messages wait.
+onUsage((u) => {
+  const m: ServerMsg = { type: "usage", usage: u };
+  for (const ws of clients) send(ws, m);
+});
+startUsagePoller(() => clients.size > 0 || Object.keys(state.resume).length > 0);
 recoverInflight();
 
 startCronPoller({
@@ -912,7 +940,8 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
       for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
       if (c.status !== "running") {
-        cancelResume(m.id); // a new message replaces the pending resume
+        if (queueMessage(m.id, text)) return broadcastList();
+        cancelResume(m.id); // nothing full (short limit): the new turn continues it
         return startTurn(c, text);
       }
       if (c.recovering) return fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
@@ -960,6 +989,36 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       if (session(m.id) || convs.get(m.id)?.status === "running") return fail(`fork: conversation ${m.id} already exists`);
       const context = transcript(await history(m.from));
       return startTurn(conv(m.id), text, { ref: { id: m.from, channel: src.channel_id, messages: context.messages }, context: context.text });
+    }
+
+    case "flush": {
+      if (!state.resume[m.id]) return fail("send now: nothing waiting");
+      console.log(`broker: ${m.id}: send now (${ws.data.ua})`);
+      return resumeNow(m.id);
+    }
+
+    case "unqueue": {
+      const r = state.resume[m.id];
+      if (!r?.queued || m.index < 0 || m.index >= r.queued.length) return fail(`unqueue: no queued message ${m.index}`);
+      r.queued.splice(m.index, 1);
+      if (!r.queued.length) {
+        delete r.queued;
+        if (r.queuedOnly) cancelResume(m.id);
+      }
+      save();
+      return broadcastList();
+    }
+
+    case "search": {
+      const t = performance.now();
+      try {
+        const ids = new Set(sessions.map((s) => s.session_id));
+        const results = search(m.q, ids);
+        if (performance.now() - t > 200) console.warn(`broker: search ${JSON.stringify(m.q)} took ${Math.round(performance.now() - t)} ms`);
+        return send(ws, { type: "search", seq: m.seq, q: m.q, results, error: null });
+      } catch (e) {
+        return send(ws, { type: "search", seq: m.seq, q: m.q, results: [], error: msg(e) });
+      }
     }
 
     case "abort": {
@@ -1062,6 +1121,10 @@ export const websocket: WebSocketHandler<Client> = {
   open(ws: ServerWebSocket<Client>) {
     clients.add(ws);
     refresh();
+    const u = usage();
+    if (u.at || u.error) send(ws, { type: "usage", usage: u });
+    // first browser after a quiet spell: fresh numbers now, not at the next 5-min tick
+    else pollUsage();
   },
   message(ws: ServerWebSocket<Client>, raw: string | Buffer) {
     let m: ClientMsg;

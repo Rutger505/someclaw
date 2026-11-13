@@ -13,6 +13,7 @@ export type Action =
   | "sidebar"
   | "focus"
   | "continue"
+  | "search"
   | "help";
 
 type Binding = { action: Action; keys: string; label: string; match: (e: KeyboardEvent) => boolean };
@@ -31,6 +32,7 @@ export const KEYMAP: Binding[] = [
   { action: "sidebar", keys: "Ctrl+B", label: "Toggle sidebar", match: (e) => ctrl(e) && !e.shiftKey && e.code === "KeyB" },
   { action: "focus", keys: "Ctrl+L", label: "Focus message input", match: (e) => ctrl(e) && !e.shiftKey && e.code === "KeyL" },
   { action: "continue", keys: "Ctrl+Shift+F", label: "Channel thread: unlock the composer to continue here", match: (e) => ctrl(e) && e.shiftKey && e.code === "KeyF" },
+  { action: "search", keys: "Ctrl+K", label: "Search conversations (titles + messages)", match: (e) => ctrl(e) && !e.shiftKey && e.code === "KeyK" },
   { action: "help", keys: "Ctrl+/", label: "Shortcuts", match: (e) => ctrl(e) && e.key === "/" },
 ];
 

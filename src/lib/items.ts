@@ -1,4 +1,4 @@
-import { RESUME_TEXT, assistantParts, toolResult, type CronRun, type ForkRef, type GatewayEvent, type LoadedSkill, type Resent, type TurnModel } from "../../shared/protocol";
+import { assistantParts, parseResume, toolResult, type CronRun, type ForkRef, type GatewayEvent, type LoadedSkill, type Resent, type TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
@@ -24,8 +24,11 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
   const last = items.at(-1);
   switch (e.type) {
     case "user":
-      if (e.content === RESUME_TEXT) items.push({ kind: "meta", text: RESUME_META });
-      else items.push({ kind: "user", text: String(e.content ?? ""), steer: !!e.steer, fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
+      {
+        const r = parseResume(String(e.content ?? ""));
+        if (r.resume) items.push({ kind: "meta", text: RESUME_META });
+        if (r.text) items.push({ kind: "user", text: r.text, steer: !!e.steer, fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
+      }
       break;
     case "chunk":
       if (last?.kind === "agent" && last.live) last.text += String(e.content ?? "");
@@ -105,7 +108,11 @@ export function buildItems(s: Snapshot): Item[] {
   };
   s.history.forEach((m, i) => {
     toolsAt(i);
-    if (m.role === "user") items.push(m.content === RESUME_TEXT ? { kind: "meta", text: RESUME_META } : { kind: "user", text: m.content, fork: m.fork, resent: m.resent, skills: m.skills, at: i });
+    if (m.role === "user") {
+      const r = parseResume(m.content);
+      if (r.resume) items.push({ kind: "meta", text: RESUME_META });
+      if (r.text) items.push({ kind: "user", text: r.text, fork: m.fork, resent: m.resent, skills: m.skills, at: i });
+    }
     else if (m.role === "assistant" && m.cron) items.push({ kind: "cron", text: m.content, cron: m.cron, at: i });
     else if (m.role === "assistant") {
       // Channel sessions: tool-using turns are stored as native JSON (text + tool_calls), results as role "tool".
