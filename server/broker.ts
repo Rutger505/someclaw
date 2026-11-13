@@ -1012,6 +1012,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     case "search": {
       const t = performance.now();
       try {
+        if (!sessions.length) await refresh(); // right after a restart the list isn't loaded yet
         const ids = new Set(sessions.map((s) => s.session_id));
         const results = search(m.q, ids);
         if (performance.now() - t > 200) console.warn(`broker: search ${JSON.stringify(m.q)} took ${Math.round(performance.now() - t)} ms`);
