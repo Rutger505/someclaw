@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, FileText, GitBranch, Image, ListPlus, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Outbox, Resume, Scheduled, TurnModel, Usage } from "../../shared/protocol";
@@ -10,6 +10,7 @@ import { Markdown } from "./Markdown";
 import { convTitle, IconButton, Kbd, StatusIcon } from "./Sidebar";
 import { Plan, ToolGroup } from "./Tools";
 import { ModelSelector } from "./ModelSelector";
+import { clipboardFiles, Editor, type EditorHandle } from "./Editor";
 
 /** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
 /** stop: stops the running turn; its outbox (messages after it) goes back into the composer. */
@@ -43,7 +44,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<EditorHandle>(null);
   const log = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // follow new output only while scrolled to the bottom
   const items = useMemo(() => (snap?.id === id ? buildItems(snap) : []), [snap, id]);
@@ -189,20 +190,17 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   /** Usage windows a message can be scheduled for: the next session (5 h) and weekly reset. */
   const resets = (usage?.windows ?? []).filter((w) => w.key === "five_hour" || w.key === "seven_day");
 
-  /** Idle: starts a turn (or queues it while a usage window is full). While rocky works: steers it. Channel sessions: forks. */
-  const submit = (window?: string) => {
+  /** Idle: starts a turn (or queues it while a usage window is full). While rocky works: steers it, or with `after`
+   * goes out after this turn as its own turn. window: at that usage window's next reset. Channel sessions: forks. */
+  const submit = (opt: { window?: string; after?: boolean } = {}) => {
     if (!canSend) return;
     const text = withAttachments(draft.trim(), files.map((f) => f.file!));
     setScheduling(false);
-    if (window) {
-      setDraft("");
-      setFiles([]);
-      return send({ type: "schedule", id, text, window });
-    }
     setDraft("");
     setFiles([]);
+    if (opt.window) return send({ type: "schedule", id, text, window: opt.window });
     stick.current = true;
-    if (!readOnly) return send({ type: "send", id, text });
+    if (!readOnly) return send({ type: opt.after && running ? "enqueue" : "send", id, text });
     const fork = crypto.randomUUID();
     send({ type: "fork", from: id, id: fork, text });
     onOpen(fork);
@@ -378,37 +376,29 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                 ))}
               </div>
             )}
-            <textarea
+            <Editor
               ref={input}
-              autoFocus
-              rows={1}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onPaste={(e) => {
-                const pasted = clipboardFiles(e.clipboardData);
-                if (!pasted.length) return;
-                e.preventDefault();
-                e.stopPropagation(); // not again by the page-wide paste handler
-                addFiles(pasted);
-              }}
+              onChange={setDraft}
+              onFiles={addFiles}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
-                  submit();
+                  submit({ after: e.ctrlKey || e.metaKey });
                 } else if (e.key === "Escape" && readOnly && !draft) {
                   e.preventDefault();
                   setUnlocked(false); // back to read-only
                 }
               }}
               placeholder={readOnly ? "Continue in a new someclaw conversation…" : asking ? "Answer rocky…" : running ? "Steer rocky…" : queues ? "Queue a message for rocky…" : "Message rocky…"}
-              className="field-sizing-content block max-h-64 min-h-12 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 outline-none placeholder:text-faint disabled:opacity-50"
+              className="max-h-64 min-h-12 overflow-y-auto px-4 pt-3.5 pb-1"
             />
             <div className="flex items-center gap-2 px-3 pb-2.5">
               <span className="text-xs text-faint">
                 {readOnly
                   ? "Enter continues in a new conversation with this thread as context · Esc locks again"
                   : running
-                    ? "rocky is working · Enter steers · Esc stops"
+                    ? "rocky is working · Enter steers · Ctrl+Enter after this turn · Esc stops"
                     : queues
                       ? `${full!.label} limit full · Enter queues until ${when(full!.at)} (${until(full!.at)})`
                       : "Enter to send · Shift+Enter new line"}
@@ -443,8 +433,19 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                     >
                       <CalendarClock size={16} />
                     </button>
-                    {scheduling && canSend && <ScheduleMenu resets={resets} usageError={usage?.error ?? null} onPick={submit} onClose={() => setScheduling(false)} />}
+                    {scheduling && canSend && <ScheduleMenu resets={resets} usageError={usage?.error ?? null} onPick={(window) => submit({ window })} onClose={() => setScheduling(false)} />}
                   </div>
+                )}
+                {running && (
+                  <button
+                    type="button"
+                    disabled={!canSend}
+                    onClick={() => submit({ after: true })}
+                    title="After this turn, as its own turn (Ctrl+Enter): a steer runs inside this turn, whose tool context keeps growing"
+                    className="grid size-8 place-items-center rounded-full bg-elevated text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-accent-glow hover:text-fg hover:ring-accent-dim disabled:bg-transparent disabled:text-faint disabled:ring-line"
+                  >
+                    <ListPlus size={16} />
+                  </button>
                 )}
                 {running && (
                   <button
@@ -457,7 +458,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                   </button>
                 )}
                 <button
-                  title={readOnly ? "Continue in new conversation (Enter)" : running ? "Steer (Enter)" : queues ? `Queue until ${when(full!.at)} (Enter)` : "Send (Enter)"}
+                  title={readOnly ? "Continue in new conversation (Enter)" : running ? (asking ? "Answer rocky's question (Enter)" : "Steer: into this turn (Enter)") : queues ? `Queue until ${when(full!.at)} (Enter)` : "Send (Enter)"}
                   disabled={!canSend}
                   className="grid size-8 place-items-center rounded-full bg-accent text-base transition-colors hover:bg-accent-light disabled:bg-elevated disabled:text-faint"
                 >
@@ -791,19 +792,6 @@ function Waiting({ resume, usage, onCancel, onNow, onEdit }: { resume: Resume; u
       </div>
     </div>
   );
-}
-
-/** Files in a paste: `files`, else file items (some browsers only fill items, e.g. an image copied from a page).
- * Unnamed clipboard images get a name with the right extension. */
-function clipboardFiles(dt: DataTransfer): File[] {
-  let list = Array.from(dt.files);
-  if (!list.length) list = Array.from(dt.items).filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter((f): f is File => !!f);
-  return list.map((f) => {
-    if (f.name && f.name !== "image.png") return f;
-    const ext = f.type.split("/")[1]?.replace("jpeg", "jpg").replace(/\W.*/, "") || "bin";
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
-    return new File([f], `pasted-${stamp}.${ext}`, { type: f.type });
-  });
 }
 
 /** Menu above the schedule button: send at the next session (5 h) or weekly reset. */

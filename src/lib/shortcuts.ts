@@ -36,9 +36,10 @@ export const KEYMAP: Binding[] = [
   { action: "help", keys: "Ctrl+/", label: "Shortcuts", match: (e) => ctrl(e) && e.key === "/" },
 ];
 
-/** Composer keys, handled in the textarea itself; listed here for the help overlay. */
+/** Composer keys, handled in the composer itself; listed here for the help overlay. */
 export const COMPOSER_KEYS = [
   { keys: "Enter", label: "Send (steers while rocky works)" },
+  { keys: "Ctrl+Enter", label: "While rocky works: send after this turn, as its own turn" },
   { keys: "Shift+Enter", label: "New line" },
 ];
 

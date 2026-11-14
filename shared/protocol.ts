@@ -119,6 +119,8 @@ export type ClientMsg =
   /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in);
    * answers rocky's open ask_user question instead when there is one. */
   | { type: "send"; id: string; text: string }
+  /** Running: goes out after this turn, as its own turn (outbox). Idle: same as send. */
+  | { type: "enqueue"; id: string; text: string }
   /** Answer the running turn's ask_user question (gateway ask_user frame, zeroclaw-patches 0003). */
   | { type: "answer"; id: string; request_id: string; answer: string }
   /** Continue read-only channel session `from` in new conversation `id`: `text` plus that thread as context. */

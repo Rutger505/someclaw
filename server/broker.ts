@@ -1092,6 +1092,21 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       return broadcastList();
     }
 
+    // After the running turn, as its own turn (outbox): a steer would run in the same turn, whose tool context keeps growing.
+    case "enqueue": {
+      const text = m.text.trim();
+      if (!text) return;
+      const ro = readOnly(m.id);
+      if (ro) return fail(ro);
+      const c = conv(m.id);
+      if (c.status !== "running" && !c.finishing && !runningElsewhere.has(m.id)) return handle(ws, { type: "send", id: m.id, text });
+      (state.outbox[m.id] ??= { items: [], held: null }).items.push(text);
+      save();
+      console.log(`broker: ${m.id}: message queued after the running turn (${state.outbox[m.id]!.items.length} in outbox)`);
+      broadcastList();
+      return kick(m.id); // running/finishing: finish() kicks; elsewhere: looks again in 30 s
+    }
+
     case "answer": {
       const c = convs.get(m.id);
       if (!c || c.status !== "running") return fail("answer: no running turn");
