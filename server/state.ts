@@ -1,6 +1,6 @@
 // someclaw's own state (the gateway has no archive/tool history). JSON files in SOMECLAW_STATE_DIR, written atomically.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import type { ForkRef, GatewayEvent, Resume, ToolLog, TurnModel } from "../shared/protocol";
+import type { ForkRef, GatewayEvent, Outbox, Resume, Scheduled, ToolLog, TurnModel } from "../shared/protocol";
 
 const DIR = process.env.SOMECLAW_STATE_DIR ?? `${process.env.HOME}/.local/state/someclaw`;
 mkdirSync(`${DIR}/tools`, { recursive: true, mode: 0o700 });
@@ -33,6 +33,8 @@ export type State = {
   channelTitles: Record<string, { at: string; name: string }>;
   previews: Record<string, string>; // first message of conversations started here
   resume: Record<string, Resume>; // rate-limited conversations the broker resumes itself
+  outbox: Record<string, Outbox>; // messages sent one turn each after the running one
+  scheduled: Record<string, Scheduled[]>; // messages sent at a usage window's reset, oldest first
   /** Session created_at at first sighting. Channel session ids are fixed per contact and come back after a delete:
    * a changed created_at means a new conversation, so its archive/title/preview state is dropped. */
   created: Record<string, string>;
@@ -51,7 +53,7 @@ export type State = {
 export type CronTrack = { session: string; name: string | null; since: string; lastRun: number; goneSince?: string };
 
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, models: {}, cron: {}, unpinned: {}, token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, outbox: {}, scheduled: {}, models: {}, cron: {}, unpinned: {}, token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 

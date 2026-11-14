@@ -1,5 +1,5 @@
-import { Archive, ArchiveRestore, ChevronRight, CircleAlert, Clock, ExternalLink, Keyboard, Loader, MessageCircle, Plus, Search as SearchIcon, X } from "lucide-react";
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Archive, ArchiveRestore, CalendarClock, ChevronRight, ListOrdered, CircleAlert, Clock, ExternalLink, Keyboard, Loader, MessageCircle, Plus, Search as SearchIcon, X } from "lucide-react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
 import type { Conversation, SearchHit, Usage } from "../../shared/protocol";
 import { DASHBOARD_URL } from "../App";
 import type { Link, Search } from "../lib/broker";
@@ -15,11 +15,33 @@ const inApp = (fn: () => void) => (e: React.MouseEvent) => {
 export const convTitle = (c: Conversation) => c.name ?? c.preview ?? (c.channel ? c.channel : "New conversation");
 
 /** Status as distinct shapes, not just colors: working = spinner, rate-limited = clock (+ queued count), failed = alert,
- * new reply = solid dot. `compact` (chat header): no reset time next to the clock. */
-export function StatusIcon({ c, compact = false }: { c: Pick<Conversation, "status" | "unread" | "resume" | "error">; compact?: boolean }) {
+ * new reply = solid dot, messages after this turn = numbered list, scheduled = calendar clock. `compact` (chat header):
+ * no times next to the clocks. */
+export function StatusIcon({ c, compact = false }: { c: Pick<Conversation, "status" | "unread" | "resume" | "error" | "outbox" | "scheduled">; compact?: boolean }) {
   const queued = c.resume?.queued?.length ?? 0;
+  const out = c.outbox?.items.length ?? 0;
+  const next = c.scheduled[0];
   return (
     <span className="flex shrink-0 items-center gap-1.5">
+      {out > 0 && (
+        <span
+          title={c.outbox!.held ? `${out} message(s) paused, last turn failed: ${c.outbox!.held}` : `${out} more message(s), one turn each after this one`}
+          className={`flex items-center gap-0.5 rounded px-1 font-mono text-[10px] leading-4 ${c.outbox!.held ? "bg-err/10 text-err" : "bg-elevated text-fg-2"}`}
+        >
+          <ListOrdered size={11} />
+          {out}
+        </span>
+      )}
+      {next && (
+        <span
+          title={c.scheduled.map((s) => `scheduled for the ${s.label.toLowerCase()} reset, ${when(s.at)} (${until(s.at)})`).join("\n")}
+          className="flex items-center gap-1 rounded bg-elevated px-1 font-mono text-[10px] leading-4 text-muted"
+        >
+          <CalendarClock size={11} />
+          {!compact && when(next.at)}
+          {c.scheduled.length > 1 && <span className="rounded-sm bg-line-strong px-0.5 text-fg">{c.scheduled.length}</span>}
+        </span>
+      )}
       {c.status === "running" && (
         <span title="rocky is working">
           <Loader size={13} className="animate-spin text-warn" />
@@ -256,18 +278,24 @@ function Results({ q, found, matches, openId, onOpen, onJump }: { q: string; fou
 
 /** Anthropic plan usage (polled by the broker every 5 min while a browser is open). */
 function UsagePanel({ usage }: { usage: Usage }) {
+  const [, tick] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const t = setInterval(tick, 60_000); // keep "in 2h 5m" current between polls
+    return () => clearInterval(t);
+  }, []);
   const updated = usage.at ? `updated ${when(usage.at)}` : "never loaded";
-  const extra = usage.extra?.enabled && usage.extra.used > 0 ? usage.extra : null;
+  const extra = usage.extra;
+  const money = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: extra?.currency || "EUR" });
   return (
     <div className="flex flex-col gap-2 border-t border-line px-4 py-3" title={`Claude plan usage (same account as ZeroClaw), ${updated}`}>
       {usage.windows.map((w) => {
         const tone = w.percent >= 100 ? "bg-err" : w.percent >= 80 ? "bg-warn" : "bg-accent";
         return (
-          <div key={w.key} className="flex flex-col gap-1" title={w.resets_at ? `${w.label}: ${w.percent}%, resets ${new Date(w.resets_at).toLocaleString()}` : undefined}>
+          <div key={w.key} className="flex flex-col gap-1" title={w.resets_at ? `${w.label}: ${w.percent}%, resets ${new Date(w.resets_at).toLocaleString()}` : `${w.label}: ${w.percent}%, not started`}>
             <div className="flex items-baseline gap-2 text-xs">
               <span className="text-fg-2">{w.label}</span>
               <span className={`font-mono ${w.percent >= 100 ? "text-err" : w.percent >= 80 ? "text-warn" : "text-muted"}`}>{Math.round(w.percent)}%</span>
-              {w.resets_at && <span className="ml-auto text-faint">resets {when(w.resets_at)}</span>}
+              <span className="ml-auto truncate text-faint">{w.resets_at ? `${when(w.resets_at)} · ${until(w.resets_at)}` : "not started"}</span>
             </div>
             <div className="h-1 overflow-hidden rounded-full bg-elevated">
               <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.min(100, Math.max(0, w.percent))}%` }} />
@@ -276,8 +304,9 @@ function UsagePanel({ usage }: { usage: Usage }) {
         );
       })}
       {extra && (
-        <p className="text-xs text-faint">
-          Extra usage: {extra.used.toLocaleString(undefined, { style: "currency", currency: extra.currency || "EUR" })} this month
+        <p className="text-xs text-faint" title={extra.blocked ?? "Turns past a full plan limit run on extra usage"}>
+          Extra usage {extra.available ? "on" : !extra.enabled ? "off" : `blocked (${extra.blocked})`} · {money(extra.used)}
+          {extra.limit !== null && ` of ${money(extra.limit)}`} this month
         </p>
       )}
       {usage.error && <p className="font-mono text-[11px] break-words text-err">usage: {usage.error}</p>}
@@ -300,7 +329,7 @@ function Row({ c, n, open, onOpen, onArchive }: { c: Conversation; n: number | n
         {n}
       </span>
       <span className={`flex-1 truncate ${c.unread ? "font-medium text-fg" : ""}`}>{convTitle(c)}</span>
-      {(c.channel || c.status !== "idle" || c.unread) && (
+      {(c.channel || c.status !== "idle" || c.unread || c.outbox || c.scheduled.length > 0) && (
         <span className="flex shrink-0 items-center gap-1.5 group-hover:hidden">
           {c.channel && <MessageCircle size={14} className="text-muted" />}
           <StatusIcon c={c} />

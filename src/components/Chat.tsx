@@ -1,7 +1,7 @@
-import { Archive, ArchiveRestore, ArrowUp, Check, CircleAlert, CircleHelp, Clock, Copy, Pencil, Send, Upload, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, FileText, GitBranch, Image, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
-import type { ClientMsg, Conversation, Resume, TurnModel, Usage } from "../../shared/protocol";
+import type { ClientMsg, Conversation, Outbox, Resume, Scheduled, TurnModel, Usage } from "../../shared/protocol";
 import { until, when } from "../lib/time";
 import type { Snapshot } from "../lib/broker";
 import { uploadFile } from "../lib/gateway";
@@ -12,7 +12,8 @@ import { Plan, ToolGroup } from "./Tools";
 import { ModelSelector } from "./ModelSelector";
 
 /** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
-export type ChatHandle = { focus: () => void; rename: () => void; unlock: () => boolean };
+/** stop: stops the running turn; its outbox (messages after it) goes back into the composer. */
+export type ChatHandle = { focus: () => void; rename: () => void; unlock: () => boolean; stop: () => void };
 
 type Props = {
   id: string;
@@ -56,6 +57,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const locked = readOnly && !unlocked;
 
   useImperativeHandle(ref, () => ({
+    stop,
     focus: () => input.current?.focus(),
     rename: () => conv && setRenaming(conv.name ?? ""),
     unlock: () => {
@@ -131,6 +133,17 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
       addFiles(e.dataTransfer!.files);
       onDropped();
     };
+    // Pasted images with the focus outside the composer (chat log, sidebar, nothing): attach them too.
+    const paste = (e: ClipboardEvent) => {
+      if (e.defaultPrevented || !e.clipboardData) return;
+      const pasted = clipboardFiles(e.clipboardData);
+      if (!pasted.length) return;
+      e.preventDefault();
+      if (readOnly) setUnlocked(true);
+      addFiles(pasted);
+      onDropped();
+    };
+    addEventListener("paste", paste);
     addEventListener("dragenter", enter);
     addEventListener("dragover", over);
     addEventListener("dragleave", leave);
@@ -140,6 +153,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
       removeEventListener("dragover", over);
       removeEventListener("dragleave", leave);
       removeEventListener("drop", drop);
+      removeEventListener("paste", paste);
     };
   });
 
@@ -160,20 +174,31 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   };
 
   // A usage window is full: the broker holds new messages until it resets (also when this conversation waits already).
-  const full = useMemo(() => {
-    let latest: { label: string; at: string } | null = null;
-    for (const w of usage?.windows ?? [])
-      if (w.percent >= 100 && w.resets_at && Date.parse(w.resets_at) > Date.now() && (!latest || w.resets_at > latest.at)) latest = { label: w.label, at: w.resets_at };
-    return latest;
-  }, [usage]);
+  // Not memoized: a reset passing (before the next usage poll) has to count on the next render.
+  let full: { label: string; at: string } | null = null;
+  for (const w of usage?.windows ?? [])
+    if (w.percent >= 100 && w.resets_at && Date.parse(w.resets_at) > Date.now() && (!full || w.resets_at > full.at)) full = { label: w.label, at: w.resets_at };
   const queues = !readOnly && !running && !!full;
-  /** Puts queued text back in the composer (cancel / edit), before what's typed there. */
+  /** Puts held-back text back in the composer (cancel / edit), before what's typed there. */
   const restore = (texts: string[]) => setDraft((d) => [...texts, d].filter((x) => x.trim()).join("\n\n"));
+  function stop() {
+    restore(conv?.outbox?.items ?? []);
+    send({ type: "abort", id });
+  }
+  const [scheduling, setScheduling] = useState(false);
+  /** Usage windows a message can be scheduled for: the next session (5 h) and weekly reset. */
+  const resets = (usage?.windows ?? []).filter((w) => w.key === "five_hour" || w.key === "seven_day");
 
   /** Idle: starts a turn (or queues it while a usage window is full). While rocky works: steers it. Channel sessions: forks. */
-  const submit = () => {
+  const submit = (window?: string) => {
     if (!canSend) return;
     const text = withAttachments(draft.trim(), files.map((f) => f.file!));
+    setScheduling(false);
+    if (window) {
+      setDraft("");
+      setFiles([]);
+      return send({ type: "schedule", id, text, window });
+    }
     setDraft("");
     setFiles([]);
     stick.current = true;
@@ -262,7 +287,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
           {conv?.titleError && <Banner label="Auto-title failed" text={conv.titleError} />}
           {snap?.historyError && <Banner label="History failed to load" text={snap.historyError} />}
           {!snap && <p className="text-sm text-muted">Loading…</p>}
-          {snap && !items.length && !conv?.resume?.queued?.length && <Empty />}
+          {snap && !items.length && !conv?.resume?.queued?.length && !conv?.outbox && !conv?.scheduled.length && <Empty />}
           {items.map((item, i) => (
             <Row
               key={i}
@@ -278,17 +303,45 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             />
           ))}
           {conv?.error && !running && <Banner label="Turn failed" text={conv.error} />}
+          {conv?.outbox && (
+            <OutboxList
+              outbox={conv.outbox}
+              running={running}
+              onNow={() => send({ type: "flush", id })}
+              onCancel={() => {
+                restore(conv.outbox?.items ?? []);
+                conv.outbox?.items.forEach(() => send({ type: "unqueue", id, list: "outbox", index: 0 }));
+              }}
+              onEdit={(i) => {
+                restore([conv.outbox!.items[i]!]);
+                send({ type: "unqueue", id, list: "outbox", index: i });
+                input.current?.focus();
+              }}
+            />
+          )}
+          {!!conv?.scheduled.length && (
+            <ScheduledList
+              list={conv.scheduled}
+              onEdit={(i) => {
+                restore([conv.scheduled[i]!.text]);
+                send({ type: "unqueue", id, list: "scheduled", index: i });
+                input.current?.focus();
+              }}
+            />
+          )}
           {conv?.resume && !running && (
             <Waiting
               resume={conv.resume}
+              usage={usage}
               onCancel={() => {
                 restore(conv.resume?.queued ?? []);
                 send({ type: "abort", id });
+                // outbox items wait behind a resume only as resume.queued, so nothing else to restore
               }}
               onNow={() => send({ type: "flush", id })}
               onEdit={(i) => {
                 restore([conv.resume!.queued![i]!]);
-                send({ type: "unqueue", id, index: i });
+                send({ type: "unqueue", id, list: "queued", index: i });
                 input.current?.focus();
               }}
             />
@@ -332,9 +385,11 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onPaste={(e) => {
-                if (!e.clipboardData.files.length) return;
+                const pasted = clipboardFiles(e.clipboardData);
+                if (!pasted.length) return;
                 e.preventDefault();
-                addFiles(e.clipboardData.files);
+                e.stopPropagation(); // not again by the page-wide paste handler
+                addFiles(pasted);
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -377,11 +432,25 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                 >
                   <Paperclip size={16} />
                 </button>
+                {!readOnly && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      disabled={!canSend}
+                      onClick={() => setScheduling((x) => !x)}
+                      title="Send at the next session or weekly reset"
+                      className="grid size-8 place-items-center rounded-full text-muted transition-colors hover:bg-elevated hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <CalendarClock size={16} />
+                    </button>
+                    {scheduling && canSend && <ScheduleMenu resets={resets} usageError={usage?.error ?? null} onPick={submit} onClose={() => setScheduling(false)} />}
+                  </div>
+                )}
                 {running && (
                   <button
                     type="button"
-                    onClick={() => send({ type: "abort", id })}
-                    title="Stop (Esc)"
+                    onClick={stop}
+                    title={conv?.outbox ? "Stop (Esc): the messages after this turn go back into the composer" : "Stop (Esc)"}
                     className="grid size-8 place-items-center rounded-full bg-elevated text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-err/15 hover:text-err hover:ring-err/40"
                   >
                     <Square size={12} fill="currentColor" />
@@ -667,27 +736,28 @@ function Banner({ label, text }: { label?: string; text: string }) {
 }
 
 /** Rate-limited: the broker resumes the turn (and/or sends the queued messages) itself at resume.at. */
-function Waiting({ resume, onCancel, onNow, onEdit }: { resume: Resume; onCancel: () => void; onNow: () => void; onEdit: (index: number) => void }) {
+function Waiting({ resume, usage, onCancel, onNow, onEdit }: { resume: Resume; usage: Usage | null; onCancel: () => void; onNow: () => void; onEdit: (index: number) => void }) {
   const queued = resume.queued ?? [];
-  const verb = resume.queuedOnly ? `Sends ${queued.length === 1 ? "it" : `these ${queued.length}`}` : queued.length ? "Resumes + sends these" : "Resumes automatically";
+  // Full plan window: sending now only works on extra usage, so the button only shows when that's on and says so.
+  // No window full (short limit, reset unknown): a plain retry.
+  const window = resume.window ?? /^(\w+) usage at 100%/.exec(resume.reason)?.[1];
+  const extra = usage?.extra;
+  const money = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: extra?.currency || "EUR" });
+  const now = !window
+    ? { label: "Retry now", title: "Retry now instead of waiting (fails again if the limit is still hit)" }
+    : extra?.available
+      ? {
+          label: `Send now · extra usage`,
+          title: `Runs on extra usage (paid credits past the plan limit): ${money(extra.used)} used this month${extra.limit !== null ? ` of ${money(extra.limit)}` : ", no monthly cap set"}`,
+        }
+      : null;
+  const verb = resume.queuedOnly
+    ? queued.length === 1 ? "Sends it" : `Sends these ${queued.length}, one turn each, from`
+    : queued.length ? "Resumes, then sends these one turn each, from" : "Resumes automatically";
   return (
     <div className="flex flex-col gap-2">
       {queued.map((q, i) => (
-        <div key={i} className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
-          <span className="flex items-center gap-1 text-xs text-info">
-            <Clock size={12} /> queued · sends {when(resume.at)}
-          </span>
-          <div className="max-w-full rounded-2xl rounded-br-md border border-dashed border-info/40 bg-info/[0.06] px-4 py-2.5 whitespace-pre-wrap wrap-anywhere text-fg-2">
-            {previewText(q)}
-          </div>
-          <button
-            onClick={() => onEdit(i)}
-            title="Take it out of the queue, back into the composer"
-            className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted opacity-0 transition-colors group-hover:opacity-100 hover:bg-elevated hover:text-fg pointer-coarse:opacity-100"
-          >
-            <Pencil size={13} /> Edit
-          </button>
-        </div>
+        <HeldBubble key={i} tone="info" label={<><Clock size={12} /> queued · {i === 0 ? `sends ${when(resume.at)}` : "own turn after the one before"}</>} text={q} onEdit={() => onEdit(i)} />
       ))}
       <div className="flex items-center gap-2.5 rounded-xl border border-info/25 bg-info/[0.06] px-3.5 py-2.5 text-sm">
         <Clock size={16} className="shrink-0 text-info" />
@@ -702,13 +772,15 @@ function Waiting({ resume, onCancel, onNow, onEdit }: { resume: Resume; onCancel
           </p>
           <p className="font-mono text-xs break-words text-fg-2">{resume.reason}</p>
         </div>
-        <button
-          onClick={onNow}
-          title="Send now instead of waiting for the reset (fails again if the limit is still hit)"
-          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-elevated hover:text-fg"
-        >
-          <Send size={13} /> Now
-        </button>
+        {now && (
+          <button
+            onClick={onNow}
+            title={now.title}
+            className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-elevated hover:text-fg"
+          >
+            <Send size={13} /> {now.label}
+          </button>
+        )}
         <button
           onClick={onCancel}
           title={queued.length ? "Cancel: queued messages go back into the composer" : "Cancel auto-resume (Esc)"}
@@ -717,6 +789,117 @@ function Waiting({ resume, onCancel, onNow, onEdit }: { resume: Resume; onCancel
           <X size={14} />
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Files in a paste: `files`, else file items (some browsers only fill items, e.g. an image copied from a page).
+ * Unnamed clipboard images get a name with the right extension. */
+function clipboardFiles(dt: DataTransfer): File[] {
+  let list = Array.from(dt.files);
+  if (!list.length) list = Array.from(dt.items).filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter((f): f is File => !!f);
+  return list.map((f) => {
+    if (f.name && f.name !== "image.png") return f;
+    const ext = f.type.split("/")[1]?.replace("jpeg", "jpg").replace(/\W.*/, "") || "bin";
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+    return new File([f], `pasted-${stamp}.${ext}`, { type: f.type });
+  });
+}
+
+/** Menu above the schedule button: send at the next session (5 h) or weekly reset. */
+function ScheduleMenu({ resets, usageError, onPick, onClose }: { resets: Usage["windows"]; usageError: string | null; onPick: (window: string) => void; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => !box.current?.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && (e.stopPropagation(), onClose());
+    addEventListener("mousedown", away);
+    addEventListener("keydown", esc, true);
+    return () => {
+      removeEventListener("mousedown", away);
+      removeEventListener("keydown", esc, true);
+    };
+  }, []);
+  return (
+    <div ref={box} data-popover-open className="absolute right-0 bottom-10 z-20 flex w-72 flex-col gap-0.5 rounded-xl border border-line-strong bg-surface p-1.5 shadow-xl shadow-black/40">
+      <p className="px-2 pt-1 pb-1.5 text-xs text-faint">Send at the next reset</p>
+      {resets.map((w) => (
+        <button
+          key={w.key}
+          type="button"
+          disabled={!w.resets_at || Date.parse(w.resets_at) <= Date.now()}
+          onClick={() => onPick(w.key)}
+          className="flex items-baseline gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-fg-2 hover:bg-elevated hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          <span>{w.key === "five_hour" ? "Session reset" : "Weekly reset"}</span>
+          <span className="ml-auto font-mono text-xs text-muted">{w.resets_at ? `${when(w.resets_at)} · ${until(w.resets_at)}` : "not started"}</span>
+        </button>
+      ))}
+      {!resets.length && <p className="px-2 py-1.5 font-mono text-xs break-words text-err">{usageError ? `usage: ${usageError}` : "usage not loaded yet"}</p>}
+    </div>
+  );
+}
+
+/** Held-back bubble (queued, next up, scheduled): dashed, with Edit = back into the composer. */
+function HeldBubble({ label, text, tone, onEdit }: { label: React.ReactNode; text: string; tone: "info" | "muted"; onEdit: () => void }) {
+  return (
+    <div className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
+      <span className={`flex items-center gap-1 text-xs ${tone === "info" ? "text-info" : "text-muted"}`}>{label}</span>
+      <div className={`max-w-full rounded-2xl rounded-br-md border border-dashed px-4 py-2.5 whitespace-pre-wrap wrap-anywhere text-fg-2 ${tone === "info" ? "border-info/40 bg-info/[0.06]" : "border-line-strong bg-elevated/40"}`}>
+        {previewText(text)}
+      </div>
+      <button
+        onClick={onEdit}
+        title="Take it out, back into the composer"
+        className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted opacity-0 transition-colors group-hover:opacity-100 hover:bg-elevated hover:text-fg pointer-coarse:opacity-100"
+      >
+        <Pencil size={13} /> Edit
+      </button>
+    </div>
+  );
+}
+
+/** Messages that go out one turn each after the running turn (queued at a reset, scheduled). */
+function OutboxList({ outbox, running, onNow, onCancel, onEdit }: { outbox: Outbox; running: boolean; onNow: () => void; onCancel: () => void; onEdit: (index: number) => void }) {
+  const n = outbox.items.length;
+  return (
+    <div className="flex flex-col gap-2">
+      {outbox.items.map((q, i) => (
+        <HeldBubble key={i} tone="muted" label={<><ListOrdered size={12} /> {i === 0 ? "next" : `#${i + 1}`} · own turn</>} text={q} onEdit={() => onEdit(i)} />
+      ))}
+      {outbox.held ? (
+        <div className="flex items-center gap-2.5 rounded-xl border border-err/25 bg-err/[0.06] px-3.5 py-2.5 text-sm">
+          <CircleAlert size={16} className="shrink-0 text-err" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-fg">Paused: {n === 1 ? "this message waits" : `these ${n} wait`} because the last turn failed</p>
+            <p className="font-mono text-xs break-words text-err/90">{outbox.held}</p>
+          </div>
+          <button onClick={onNow} title="Send the next one now" className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-fg-2 ring-1 ring-line-strong transition-colors hover:bg-elevated hover:text-fg">
+            <Send size={13} /> Send next
+          </button>
+          <button onClick={onCancel} title="Cancel: back into the composer" className="-mr-1 grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-line-strong hover:text-fg">
+            <X size={14} />
+          </button>
+        </div>
+      ) : (
+        <p className="ml-auto text-xs text-faint">{running ? `${n === 1 ? "Goes" : `These ${n} go`} out after this turn, one turn each (smaller context)` : "Sending…"}</p>
+      )}
+    </div>
+  );
+}
+
+/** Messages the broker sends at a usage window's reset. */
+function ScheduledList({ list, onEdit }: { list: Scheduled[]; onEdit: (index: number) => void }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {list.map((s, i) => (
+        <HeldBubble
+          key={`${s.at}-${i}`}
+          tone="info"
+          label={<span title={new Date(s.at).toLocaleString()} className="flex items-center gap-1"><CalendarClock size={12} /> {s.label} reset · {when(s.at)} · {until(s.at)}</span>}
+          text={s.text}
+          onEdit={() => onEdit(i)}
+        />
+      ))}
     </div>
   );
 }

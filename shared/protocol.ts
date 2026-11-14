@@ -16,18 +16,36 @@ export type Resume = {
   attempt: number;
   /** Attempts before the broker gives up (absent in waits saved by older versions). */
   max?: number;
-  /** Messages typed while rate-limited: sent as one message at `at`. */
+  /** Messages typed while rate-limited: sent at `at`, one turn each (outbox). */
   queued?: string[];
+  /** Usage window that is full (absent: short limit / reset unknown, or a wait saved by an older version). */
+  window?: string;
   /** No failed turn to continue: only queued messages (sent while a usage window was full). */
   queuedOnly?: true;
 };
+
+/** Message the broker sends itself at `at` (reset of usage window `window` + margin), via the outbox. */
+export type Scheduled = { text: string; at: string; window: string; label: string };
+
+/** Messages that go out one turn each, after the running turn (a turn's tool calls stay in its context until it ends:
+ * several tasks in one message cost far more than one by one). held: a turn of the chain failed, waiting for the user. */
+export type Outbox = { items: string[]; held: string | null };
 
 /** Anthropic plan usage (Claude Code's /usage endpoint, same account as ZeroClaw). */
 export type UsageWindow = { key: string; label: string; percent: number; resets_at: string | null };
 export type Usage = {
   windows: UsageWindow[];
   /** Extra usage credits (pay-as-you-go past the plan limits); used in the currency's minor unit / 10^decimals. */
-  extra: { enabled: boolean; used: number; currency: string } | null;
+  extra: {
+    enabled: boolean;
+    used: number;
+    currency: string;
+    /** Monthly cap in the same unit; null = none set. */
+    limit: number | null;
+    /** Turns past a full plan window run on extra usage right now; else `blocked` says why not. */
+    available: boolean;
+    blocked: string | null;
+  } | null;
   /** Last successful poll; error: last poll's failure (windows then from the poll before). */
   at: string | null;
   error: string | null;
@@ -56,6 +74,8 @@ export type Conversation = {
   titleError: string | null;
   /** Set while status is "waiting". */
   resume: Resume | null;
+  outbox: Outbox | null;
+  scheduled: Scheduled[];
 };
 
 /** A conversation continued from a read-only channel session: its first message carries that thread as context. */
@@ -103,13 +123,16 @@ export type ClientMsg =
   | { type: "answer"; id: string; request_id: string; answer: string }
   /** Continue read-only channel session `from` in new conversation `id`: `text` plus that thread as context. */
   | { type: "fork"; from: string; id: string; text: string }
-  /** Waiting (rate-limited): resume / send the queued messages now instead of at the reset. */
+  /** Waiting (rate-limited): resume / send the queued messages now instead of at the reset. Outbox held after a
+   * failed turn: send its next message. */
   | { type: "flush"; id: string }
-  /** Waiting: drop queued message `index` (the UI puts it back in the composer). */
-  | { type: "unqueue"; id: string; index: number }
+  /** Send `text` at the next reset of usage window `window` (five_hour, seven_day), even with usage left. */
+  | { type: "schedule"; id: string; text: string; window: string }
+  /** Drop held-back message `index` (the UI puts it back in the composer). */
+  | { type: "unqueue"; id: string; list: "queued" | "outbox" | "scheduled"; index: number }
   /** Full-text search in user messages and rocky's replies (not tool calls). seq: echoed back, newest wins. */
   | { type: "search"; q: string; seq: number }
-  /** Running: stops the turn. Waiting: cancels the auto-resume and drops queued messages. */
+  /** Running: stops the turn, drops the outbox. Waiting: cancels the auto-resume and drops queued messages. */
   | { type: "abort"; id: string }
   | { type: "archive"; id: string; archived: boolean }
   | { type: "rename"; id: string; name: string }
@@ -138,7 +161,7 @@ export type ServerMsg =
 export const stripDatePrefix = (s: string) => s.replace(/^\[(CURRENT DATE & TIME: [^\]]*|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [^\]]*)\]\s*/, "");
 
 /** Sent by the broker to resume a rate-limited turn (the failed message is already in the history). Messages queued
- * meanwhile follow it after a blank line. */
+ * meanwhile follow as their own turns (older versions appended them after a blank line). */
 export const RESUME_TEXT = "[someclaw] Rate limit reset: continue where you left off.";
 
 export function parseResume(content: string): { resume: boolean; text: string } {

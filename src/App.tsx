@@ -93,6 +93,8 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
         if (conv?.status !== "running" && conv?.status !== "waiting") return false;
         // queued messages: only the card's cancel drops them (and puts them back in the composer)
         if (conv.status === "waiting" && conv.resume?.queued?.length) return false;
+        // running: Chat's stop also puts the outbox back into the composer
+        if (conv.status === "running" && chat.current) return chat.current.stop();
         return send({ type: "abort", id: openId });
       case "sidebar":
         return setSidebar((x) => !x);

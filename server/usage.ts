@@ -82,6 +82,9 @@ const LABELS: Record<string, string> = {
   seven_day_sonnet: "Weekly Sonnet",
 };
 
+/** Resets come as hh:59:59.8: rounded to the minute, so every time shown (and sends based on it) reads hh:00. */
+const roundMinute = (iso: string) => new Date(Math.round(Date.parse(iso) / 60_000) * 60_000).toISOString();
+
 /** Plan windows: top-level { utilization, resets_at } objects (null = not on this plan). */
 function windows(raw: Raw): UsageWindow[] {
   const out: UsageWindow[] = [];
@@ -89,16 +92,31 @@ function windows(raw: Raw): UsageWindow[] {
     if (!w || typeof w !== "object" || Array.isArray(w) || !("resets_at" in w)) continue;
     const { utilization, resets_at } = w as Window & object;
     if (typeof utilization !== "number") continue;
-    out.push({ key, label: LABELS[key] ?? key, percent: utilization, resets_at: resets_at ? new Date(resets_at).toISOString() : null });
+    out.push({ key, label: LABELS[key] ?? key, percent: utilization, resets_at: resets_at ? roundMinute(resets_at) : null });
   }
   const order = (k: string) => (k in LABELS ? Object.keys(LABELS).indexOf(k) : 99);
   return out.sort((a, b) => order(a.key) - order(b.key));
 }
 
 function extra(raw: Raw): Usage["extra"] {
-  const e = raw.extra_usage as { is_enabled?: boolean; used_credits?: number; currency?: string; decimal_places?: number } | null | undefined;
+  const e = raw.extra_usage as {
+    is_enabled?: boolean; used_credits?: number; monthly_limit?: number | null; currency?: string; decimal_places?: number;
+    disabled_reason?: string | null; user_disabled?: boolean; spend_limit_reached?: boolean;
+  } | null | undefined;
   if (!e || typeof e !== "object") return null;
-  return { enabled: !!e.is_enabled, used: (e.used_credits ?? 0) / 10 ** (e.decimal_places ?? 2), currency: e.currency ?? "" };
+  const unit = 10 ** (e.decimal_places ?? 2);
+  const used = (e.used_credits ?? 0) / unit;
+  const limit = typeof e.monthly_limit === "number" ? e.monthly_limit / unit : null;
+  const blocked = !e.is_enabled
+    ? "extra usage is off"
+    : e.user_disabled
+      ? "extra usage turned off by you"
+      : e.disabled_reason
+        ? `extra usage disabled: ${e.disabled_reason}`
+        : e.spend_limit_reached || (limit !== null && used >= limit)
+          ? "extra usage spend limit reached"
+          : null;
+  return { enabled: !!e.is_enabled, used, currency: e.currency ?? "", limit, available: !blocked, blocked };
 }
 
 // ---------- cached poll ----------

@@ -39,6 +39,7 @@ import {
   type Conversation,
   type GatewayEvent,
   type HistoryMessage,
+  type Resume,
   type ServerMsg,
 } from "../shared/protocol";
 
@@ -132,13 +133,20 @@ function toConversation(id: string, s: GatewaySession | undefined): Conversation
     unread: !!s && status !== "running" && s.last_activity > (state.seen[id] ?? "") && !viewed(id),
     titleError: c?.titleError ?? null,
     resume: status === "waiting" ? resume : null,
+    outbox: state.outbox[id] ?? null,
+    scheduled: state.scheduled[id] ?? [],
   };
 }
 
 function conversations(): Conversation[] {
   const list = sessions.map((s) => toConversation(s.session_id, s)).filter((c) => c.message_count || c.status !== "idle");
   // Started here but not listed by the gateway yet (or only queued so far).
-  const ids = new Set([...[...convs.values()].filter((c) => c.status !== "idle").map((c) => c.id), ...Object.keys(state.resume)]);
+  const ids = new Set([
+    ...[...convs.values()].filter((c) => c.status !== "idle").map((c) => c.id),
+    ...Object.keys(state.resume),
+    ...Object.keys(state.outbox),
+    ...Object.keys(state.scheduled),
+  ]);
   for (const id of ids) if (!session(id)) list.push(toConversation(id, undefined));
   // Newest first by creation: stable order, so Ctrl+1-9 don't shift while conversations are active.
   return list.sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -483,6 +491,13 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   await pushSnapshot(c.id);
   if (h && !failed) autoTitle(c, h);
   closeWhenIdle(c);
+  // Next held-back message. Failed: the outbox waits for the user (a rate limit moves it into the wait instead).
+  if (!failed) kick(c.id);
+  else if (status === "error" && state.outbox[c.id]) {
+    state.outbox[c.id]!.held = error ?? "turn failed";
+    save();
+    broadcastList();
+  }
 }
 
 /** Pinned skills not in the history yet (server/skills.ts). Never fails the turn: worst case nothing is sent along. */
@@ -716,7 +731,7 @@ async function stalled(c: Conv) {
 // usage endpoint (server/usage.ts). No reset from Anthropic: short fixed retry. Hard cap on attempts either way,
 // we don't keep hammering on our own guesses. Waits survive restarts (state.resume).
 
-const RESUME_MARGIN_MS = 60_000; // after the reported reset
+const RESUME_MARGIN_MS = 20_000; // after the reported reset (rounded to the minute: shown times stay hh:00)
 const FALLBACK_RETRY_MS = 5 * 60_000; // no reset time from Anthropic (short limit, or usage endpoint failed)
 const MAX_RESUME_ATTEMPTS = 3;
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -739,8 +754,10 @@ async function scheduleResume(id: string) {
   resumeAttempts.set(id, attempt);
   let at: number;
   let reason: string;
+  let window: string | undefined;
   try {
     const reset = await rateLimitReset();
+    window = reset?.window;
     if (reset) {
       at = Math.max(Date.parse(reset.at), Date.now()) + RESUME_MARGIN_MS;
       reason = `${reset.window} usage at 100%, resets ${reset.at}`;
@@ -753,7 +770,8 @@ async function scheduleResume(id: string) {
     reason = `reset time unknown (${msg(e)}): retry in 5 min`;
   }
   if (convs.get(id)?.status === "running" || id in state.archived) return; // new turn or archived meanwhile
-  state.resume[id] = { at: new Date(at).toISOString(), reason, attempt, max: MAX_RESUME_ATTEMPTS };
+  const queued = takeOutbox(id);
+  state.resume[id] = { at: new Date(at).toISOString(), reason, attempt, max: MAX_RESUME_ATTEMPTS, ...(window && { window }), ...(queued.length && { queued }) };
   save();
   console.log(`broker: resume ${id} at ${state.resume[id].at} (attempt ${attempt}/${MAX_RESUME_ATTEMPTS}): ${reason}`);
   armResume(id);
@@ -774,16 +792,26 @@ function armResume(id: string) {
 function resumeNow(id: string) {
   resumeTimers.delete(id);
   if (!state.resume[id]) return;
-  if (id in state.archived) return void cancelResume(id); // waits from before archiving existed
+  if (id in state.archived && !state.resume[id].queuedOnly) return void cancelResume(id); // waits from before archiving existed
   const r = state.resume[id];
   resumeAttempts.set(id, Math.max(resumeAttempts.get(id) ?? 0, r.attempt));
   delete state.resume[id];
+  // The resume (or the first queued message) now, the rest one turn each after it.
+  const queued = [...(r.queued ?? [])];
+  const first = r.queuedOnly ? queued.shift() : RESUME_TEXT;
+  if (queued.length) state.outbox[id] = { items: [...queued, ...(state.outbox[id]?.items ?? [])], held: null };
   save();
+  console.log(`broker: resuming ${id}${r.queued?.length ? ` with ${r.queued.length} queued message(s), one turn each` : ""}`);
   const c = conv(id);
-  if (c.status === "running") return;
-  const queued = (r.queued ?? []).join("\n\n");
-  console.log(`broker: resuming ${id}${r.queued?.length ? ` with ${r.queued.length} queued message(s)` : ""}`);
-  startTurn(c, r.queuedOnly ? queued : queued ? `${RESUME_TEXT}\n\n${queued}` : RESUME_TEXT);
+  if (!first) return kick(id);
+  if (c.status === "running" || c.finishing) {
+    // a turn started meanwhile: everything goes after it
+    state.outbox[id] = { items: [...(r.queuedOnly ? [first] : []), ...(state.outbox[id]?.items ?? [])], held: null };
+    if (!state.outbox[id].items.length) delete state.outbox[id];
+    save();
+    return broadcastList();
+  }
+  startTurn(c, first);
 }
 
 /** Message while a usage window is full: held until it resets instead of failing (and costing an attempt) now.
@@ -795,13 +823,99 @@ function queueMessage(id: string, text: string) {
   if (r) (r.queued ??= []).push(text);
   else {
     const at = new Date(Date.parse(reset.at) + RESUME_MARGIN_MS).toISOString();
-    state.resume[id] = { at, reason: `${reset.window} usage at 100%, resets ${reset.at}: queued until then`, attempt: 0, max: MAX_RESUME_ATTEMPTS, queued: [text], queuedOnly: true };
+    state.resume[id] = { at, reason: `${reset.window} usage at 100%, resets ${reset.at}: queued until then`, attempt: 0, max: MAX_RESUME_ATTEMPTS, window: reset.window, queued: [text], queuedOnly: true };
     if (!session(id)?.message_count) state.previews[id] ??= previewText(text).slice(0, 200);
     armResume(id);
   }
   save();
   console.log(`broker: ${id}: message queued until ${state.resume[id]!.at} (${state.resume[id]!.queued!.length} queued)`);
   return true;
+}
+
+// ---------- outbox: one message per turn ----------
+// Queued (full window) and scheduled messages go out one turn each, never joined: a turn's tool calls stay in its
+// context until it ends, so several tasks in one message cost far more tokens than the same tasks one by one.
+
+function takeOutbox(id: string) {
+  const items = state.outbox[id]?.items ?? [];
+  delete state.outbox[id];
+  return items;
+}
+
+const kickTimers = new Map<string, Timer>();
+
+/** Sends the outbox's next message when the conversation is free; finish() calls it again after that turn. */
+function kick(id: string) {
+  clearTimeout(kickTimers.get(id));
+  kickTimers.delete(id);
+  const out = state.outbox[id];
+  if (!out?.items.length || out.held) return broadcastList();
+  const c = conv(id);
+  if (c.status === "running" || c.finishing) return; // finish() kicks
+  // Turn from another channel (WhatsApp, ...): no finish() here, look again later.
+  if (runningElsewhere.has(id)) return void kickTimers.set(id, setTimeout(() => kick(id), 30_000));
+  if (state.resume[id]) {
+    // rate-limited: the outbox joins the wait
+    (state.resume[id].queued ??= []).push(...takeOutbox(id));
+    save();
+    return broadcastList();
+  }
+  const text = out.items.shift()!;
+  if (!out.items.length) delete state.outbox[id];
+  if (queueMessage(id, text)) {
+    // full window: the rest waits with it (queueMessage just made the wait; TS narrowed state.resume[id] above)
+    (state.resume as Record<string, Resume>)[id]!.queued!.push(...takeOutbox(id));
+    save();
+    return broadcastList();
+  }
+  save();
+  console.log(`broker: ${id}: sending next held-back message (${state.outbox[id]?.items.length ?? 0} more after it)`);
+  startTurn(c, text);
+}
+
+// ---------- scheduled sends ----------
+// "Send at the next session / weekly reset" with usage left: the broker moves it into the outbox at that time.
+
+const scheduleTimers = new Map<string, Timer>();
+
+function schedule(id: string, text: string, window: string) {
+  const w = usage().windows.find((w) => w.key === window);
+  if (!w) throw new Error(`no usage window ${window} (usage: ${usage().error ?? "not loaded yet"})`);
+  if (!w.resets_at) throw new Error(`${w.label} window has no reset time (not started yet: nothing used in it)`);
+  const at = Date.parse(w.resets_at) + RESUME_MARGIN_MS;
+  if (at <= Date.now()) throw new Error(`${w.label} reset ${w.resets_at} already passed, usage not refreshed yet: try again in a minute`);
+  const list = (state.scheduled[id] ??= []);
+  list.push({ text, at: new Date(at).toISOString(), window, label: w.label });
+  list.sort((a, b) => a.at.localeCompare(b.at));
+  if (!session(id)?.message_count) state.previews[id] ??= previewText(text).slice(0, 200);
+  save();
+  console.log(`broker: ${id}: message scheduled for the ${window} reset, ${list.at(-1)!.at}`);
+  armScheduled(id);
+}
+
+function armScheduled(id: string) {
+  clearTimeout(scheduleTimers.get(id));
+  scheduleTimers.delete(id);
+  const next = state.scheduled[id]?.[0];
+  if (!next) return;
+  const delay = Math.max(0, Date.parse(next.at) - Date.now());
+  scheduleTimers.set(id, setTimeout(() => (delay > MAX_TIMER_MS ? armScheduled(id) : fireScheduled(id)), Math.min(delay, MAX_TIMER_MS)));
+}
+
+function fireScheduled(id: string) {
+  const list = state.scheduled[id] ?? [];
+  const due = list.filter((s) => Date.parse(s.at) <= Date.now());
+  const rest = list.filter((s) => Date.parse(s.at) > Date.now());
+  if (rest.length) state.scheduled[id] = rest;
+  else delete state.scheduled[id];
+  if (due.length) {
+    const out = (state.outbox[id] ??= { items: [], held: null });
+    out.items.push(...due.map((s) => s.text));
+    console.log(`broker: ${id}: ${due.length} scheduled message(s) due`);
+  }
+  save();
+  armScheduled(id);
+  kick(id);
 }
 
 function cancelResume(id: string) {
@@ -815,13 +929,17 @@ function cancelResume(id: string) {
 }
 
 for (const id of Object.keys(state.resume)) armResume(id);
+for (const id of Object.keys(state.scheduled)) armScheduled(id);
+// Outbox left by a restart mid-chain: the turn in flight is reattached/resent first (finish() kicks), else go on now.
+setTimeout(() => Object.keys(state.outbox).forEach(kick), 5_000);
 
 // Usage for the sidebar, and what queueMessage decides on. Polled while a browser is open or messages wait.
 onUsage((u) => {
   const m: ServerMsg = { type: "usage", usage: u };
   for (const ws of clients) send(ws, m);
 });
-startUsagePoller(() => clients.size > 0 || Object.keys(state.resume).length > 0);
+// Scheduled sends need fresh reset times too: a window that started meanwhile, and the check at send time.
+startUsagePoller(() => clients.size > 0 || Object.keys(state.resume).length > 0 || Object.keys(state.scheduled).length > 0);
 recoverInflight();
 
 startCronPoller({
@@ -941,7 +1059,14 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
       for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
       if (c.status !== "running") {
         if (queueMessage(m.id, text)) return broadcastList();
-        cancelResume(m.id); // nothing full (short limit): the new turn continues it
+        const r = state.resume[m.id];
+        if (r) {
+          // Reset passed (or short limit) before the wait fired: queued messages go first, one turn each, then this.
+          // A failed turn's resume isn't sent: the new message continues it.
+          (r.queued ??= []).push(text);
+          r.queuedOnly = true;
+          return resumeNow(m.id);
+        }
         return startTurn(c, text);
       }
       if (c.recovering) return fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
@@ -992,19 +1117,43 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     }
 
     case "flush": {
-      if (!state.resume[m.id]) return fail("send now: nothing waiting");
-      console.log(`broker: ${m.id}: send now (${ws.data.ua})`);
-      return resumeNow(m.id);
+      if (state.resume[m.id]) {
+        console.log(`broker: ${m.id}: send now (${ws.data.ua})`);
+        return resumeNow(m.id);
+      }
+      const out = state.outbox[m.id];
+      if (!out?.items.length) return fail("send now: nothing waiting");
+      out.held = null;
+      save();
+      return kick(m.id);
+    }
+
+    case "schedule": {
+      const text = m.text.trim();
+      if (!text) return;
+      const ro = readOnly(m.id);
+      if (ro) return fail(ro);
+      try {
+        schedule(m.id, text, m.window);
+      } catch (e) {
+        return fail(`schedule: ${msg(e)}`);
+      }
+      return broadcastList();
     }
 
     case "unqueue": {
-      const r = state.resume[m.id];
-      if (!r?.queued || m.index < 0 || m.index >= r.queued.length) return fail(`unqueue: no queued message ${m.index}`);
-      r.queued.splice(m.index, 1);
-      if (!r.queued.length) {
-        delete r.queued;
-        if (r.queuedOnly) cancelResume(m.id);
+      const list = m.list === "outbox" ? state.outbox[m.id]?.items : m.list === "scheduled" ? state.scheduled[m.id] : state.resume[m.id]?.queued;
+      if (!list || m.index < 0 || m.index >= list.length) return fail(`unqueue: no ${m.list} message ${m.index}`);
+      list.splice(m.index, 1);
+      if (!list.length) {
+        if (m.list === "outbox") delete state.outbox[m.id];
+        else if (m.list === "scheduled") delete state.scheduled[m.id];
+        else {
+          delete state.resume[m.id]!.queued;
+          if (state.resume[m.id]!.queuedOnly) cancelResume(m.id);
+        }
       }
+      if (m.list === "scheduled") armScheduled(m.id);
       save();
       return broadcastList();
     }
@@ -1023,6 +1172,12 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     }
 
     case "abort": {
+      // Stop = stop the chain too; the UI puts the outbox back into the composer.
+      if (state.outbox[m.id]) {
+        delete state.outbox[m.id];
+        save();
+        broadcastList();
+      }
       if (cancelResume(m.id)) return broadcastList();
       const c = convs.get(m.id);
       if (c?.recovering) {
