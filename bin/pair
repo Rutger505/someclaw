@@ -1,0 +1,14 @@
+#!/bin/bash
+# Pairing requests from browsers without a code (server/pairing.ts). Loopback only, run on the VM.
+#   bin/pair              list requests
+#   bin/pair approve CODE that browser gets a pairing code and pairs
+#   bin/pair deny CODE
+set -euo pipefail
+base="http://127.0.0.1:${PORT:-42618}/someclaw/pair/admin"
+case "${1:-list}" in
+  list) curl -sS --fail-with-body "$base/list" ;;
+  approve | deny)
+    [[ "${2:-}" =~ ^[0-9]{6}$ ]] || { echo "usage: $0 $1 <6-digit code>" >&2; exit 2; }
+    curl -sS --fail-with-body -X POST "$base/$1/$2" ;;
+  *) echo "usage: $0 [list | approve CODE | deny CODE]" >&2; exit 2 ;;
+esac

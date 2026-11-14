@@ -1,6 +1,6 @@
 import { CircleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { clearToken, pair, tokenValid } from "./lib/gateway";
+import { clearToken, pair, pollPairing, requestPairing, tokenValid } from "./lib/gateway";
 import { useVersionReload } from "./lib/useVersionReload";
 import { useBroker } from "./lib/broker";
 import { COMPOSER_KEYS, KEYMAP, useShortcuts } from "./lib/shortcuts";
@@ -203,27 +203,91 @@ function Pair({ onPaired }: { onPaired: () => void }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   return (
-    <form
-      className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center"
-      onSubmit={(e) => {
-        e.preventDefault();
-        pair(code.trim()).then(onPaired, (err) => setError(err.message));
-      }}
-    >
+    <div className="flex h-full flex-col items-center justify-center gap-4 overflow-y-auto px-6 py-8 text-center">
       <span className="grid size-12 place-items-center rounded-xl bg-accent-glow ring-1 ring-accent-dim">
         <span className="size-4 rounded-full bg-accent shadow-[0_0_16px] shadow-accent" />
       </span>
       <p className="text-lg font-medium">Pair someclaw</p>
-      <p className="text-sm text-fg-2">
-        Enter a pairing code from <code className="rounded bg-code px-1.5 py-0.5 font-mono text-[13px] text-accent-light">zeroclaw gateway get-paircode --new</code>
-      </p>
-      <input
-        autoFocus
-        value={code}
-        onChange={(e) => setCode(e.target.value)}
-        className="h-11 w-64 rounded-xl border border-line-strong bg-input px-3 text-center font-mono text-lg tracking-[0.3em] outline-none focus:border-accent"
-      />
-      {error && <p className="max-w-md font-mono text-xs break-words text-err">{error}</p>}
-    </form>
+      <form
+        className="flex flex-col items-center gap-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          pair(code.trim()).then(onPaired, (err) => setError(err.message));
+        }}
+      >
+        <p className="text-sm text-fg-2">
+          Enter a pairing code from <code className="rounded bg-code px-1.5 py-0.5 font-mono text-[13px] text-accent-light">zeroclaw gateway get-paircode --new</code>
+        </p>
+        <input
+          autoFocus
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          className="h-11 w-64 rounded-xl border border-line-strong bg-input px-3 text-center font-mono text-lg tracking-[0.3em] outline-none focus:border-accent"
+        />
+        {error && <p className="max-w-md font-mono text-xs break-words text-err">{error}</p>}
+      </form>
+      <p className="text-xs text-muted">or</p>
+      <ApprovalPair onPaired={onPaired} />
+    </div>
+  );
+}
+
+/** No shell at hand: ask rocky (WhatsApp) to approve this browser. See server/pairing.ts. */
+function ApprovalPair({ onPaired }: { onPaired: () => void }) {
+  const [req, setReq] = useState<{ id: string; code: string } | null>(null);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!req) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await pollPairing(req.id);
+        if (stop) return;
+        if (r.status === "approved" && r.pairing_code) {
+          setStatus("approved, pairing...");
+          await pair(r.pairing_code);
+          onPaired();
+          return;
+        }
+        if (r.status === "denied" || r.status === "expired") {
+          setError(`request ${req.code} ${r.status}`);
+          setReq(null);
+          return;
+        }
+      } catch (e) {
+        if (stop) return;
+        setStatus(e instanceof Error ? e.message : String(e)); // keep polling: someclaw restarting
+      }
+      if (!stop) setTimeout(tick, 2000);
+    };
+    const t = setTimeout(tick, 2000);
+    return () => { stop = true; clearTimeout(t); };
+  }, [req, onPaired]);
+
+  if (!req)
+    return (
+      <div className="flex flex-col items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setError("");
+            setStatus("");
+            requestPairing().then(setReq, (e) => setError(e.message));
+          }}
+          className="h-10 rounded-xl border border-line-strong px-4 text-sm text-fg-2 hover:border-accent hover:text-fg"
+        >
+          Ask rocky to approve this browser
+        </button>
+        {error && <p className="max-w-md font-mono text-xs break-words text-err">{error}</p>}
+      </div>
+    );
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <p className="text-sm text-fg-2">Send rocky (WhatsApp):</p>
+      <p className="rounded-xl bg-code px-4 py-2 font-mono text-lg text-accent-light select-all">approve pairing {req.code}</p>
+      <p className="text-xs text-muted">Waiting for approval, expires in 10 min. {status}</p>
+    </div>
   );
 }

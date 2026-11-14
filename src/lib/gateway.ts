@@ -29,6 +29,19 @@ export async function pair(code: string) {
   localStorage.setItem(KEY, (await res.json()).token);
 }
 
+/** Pairing by approval (server/pairing.ts): rocky runs `bin/pair approve <code>` on the VM. */
+export async function requestPairing(): Promise<{ id: string; code: string; expires_at: string }> {
+  const res = await fetch("/someclaw/pair/request", { method: "POST" });
+  if (!res.ok) throw new Error(`pair request ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+export async function pollPairing(id: string): Promise<{ status: "pending" | "approved" | "denied" | "expired"; pairing_code?: string }> {
+  const res = await fetch(`/someclaw/pair/request/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`pair poll ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 /** The WS upgrade's 401 is invisible to the browser, so check the token over REST first. */
 export async function tokenValid() {
   if (!getToken()) return false;

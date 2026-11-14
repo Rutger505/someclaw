@@ -52,6 +52,8 @@ Restarts mid-turn: the broker writes each running turn (prompt + tool steps) to 
 
 Open the URL, enter a pairing code (`zeroclaw gateway get-paircode --new`). Its own origin, so it pairs separately from the official dashboard.
 
+No shell at hand: "Ask rocky to approve this browser" shows a 6-digit request code; tell rocky (WhatsApp) `approve pairing <code>`, it runs `bin/pair approve <code>` on the VM (`bin/pair` lists, `bin/pair deny <code>`). Only then does the server mint a pairing code (`get-paircode --new`) and hand it to that browser (it polls with a secret request id), which pairs as usual: the pairing code never goes through chat. Admin endpoints (`/someclaw/pair/admin/*`) are loopback-only (no `X-Forwarded-For`, so not via Caddy); max 5 pending requests, 10 min each, in memory (`server/pairing.ts`).
+
 ## Shortcuts
 
 Ctrl+1-9 open conversation 1-9 (sidebar order: newest created first, stable), Ctrl+O new, Ctrl+↑/↓ previous/next, Ctrl+Shift+E archive, F2 rename, Esc stop, Ctrl+B sidebar, Ctrl+L focus input, Ctrl+/ help. In the input: Enter send (steers while rocky works). The sidebar shows each number before the title. Browser tabs keep Ctrl+1-9: use an app window (Chromium `--app`, Omarchy web app).

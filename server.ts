@@ -5,6 +5,7 @@ import { authorize, websocket, type Client } from "./server/broker";
 import { tokenValid } from "./server/gateway";
 import { upload } from "./server/uploads";
 import { flush } from "./server/state";
+import * as pairing from "./server/pairing";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
@@ -73,6 +74,21 @@ Bun.serve<Client, never>({
     }
 
     if (url.pathname === "/someclaw/upload" && req.method === "POST") return upload(req);
+
+    // Pairing by approval (server/pairing.ts): request + poll from the browser, list/approve/deny from bin/pair.
+    if (url.pathname === "/someclaw/pair/request" && req.method === "POST") {
+      const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || server.requestIP(req)?.address || "?";
+      return pairing.create(ip, req.headers.get("user-agent") ?? "?");
+    }
+    if (url.pathname.startsWith("/someclaw/pair/request/") && req.method === "GET") {
+      return pairing.poll(url.pathname.slice("/someclaw/pair/request/".length));
+    }
+    if (url.pathname.startsWith("/someclaw/pair/admin/")) {
+      if (!pairing.isLocal(server.requestIP(req)?.address, req)) return new Response("loopback only\n", { status: 403 });
+      const [action, code] = url.pathname.slice("/someclaw/pair/admin/".length).split("/");
+      if ((action === "list") !== (req.method === "GET")) return new Response("method not allowed\n", { status: 405 });
+      return pairing.admin(action!, code);
+    }
 
     if (url.pathname === "/someclaw/version") {
       return new Response(version, { headers: { "cache-control": "no-store" } });
