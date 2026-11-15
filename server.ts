@@ -1,6 +1,6 @@
 // Serves the built UI (dist/), runs the conversation broker on /someclaw/ws (server/broker.ts) and proxies the gateway's
 // REST API on the same origin (the gateway has no CORS; the UI uses it for pairing).
-import { watch } from "node:fs";
+import { readdirSync, watch } from "node:fs";
 import { authorize, websocket, type Client } from "./server/broker";
 import { tokenValid } from "./server/gateway";
 import { download, upload } from "./server/uploads";
@@ -10,6 +10,7 @@ import * as pairing from "./server/pairing";
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
 const DIST = `${import.meta.dir}/dist`;
+const PUBLIC = new Set(readdirSync(`${import.meta.dir}/public`));
 
 // The version is the hash of dist/index.html: it references the content-hashed bundles, so it changes with any UI change.
 // Open pages listen on /someclaw/events and reload themselves (when idle) once it changes.
@@ -107,12 +108,12 @@ Bun.serve<Client, never>({
       });
     }
 
-    // Static: index.html must revalidate, bundles are content-hashed and immutable.
+    // Static: index.html and public/ files (manifest, icons) must revalidate, bundles are content-hashed and immutable.
     const path = url.pathname === "/" ? "/index.html" : url.pathname;
     if (!path.includes("..")) {
       const file = Bun.file(DIST + path);
       if (await file.exists()) {
-        const cache = path === "/index.html" ? "no-cache" : "public, max-age=31536000, immutable";
+        const cache = path === "/index.html" || PUBLIC.has(path.slice(1)) ? "no-cache" : "public, max-age=31536000, immutable";
         return new Response(file, { headers: { "cache-control": cache } });
       }
     }

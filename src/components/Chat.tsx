@@ -12,6 +12,7 @@ import { Plan, ToolGroup } from "./Tools";
 import { ModelSelector } from "./ModelSelector";
 import { clipboardFiles, Editor, type EditorHandle } from "./Editor";
 import { AttachmentChip } from "./Attachments";
+import { editDraft, editDraftElsewhere, getDraft, onDraft } from "../lib/drafts";
 
 /** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
 /** stop: stops the running turn; its outbox (messages after it) goes back into the composer. */
@@ -28,6 +29,8 @@ type Props = {
   onToggleSidebar: () => void;
   /** Opens another conversation (a fork right after sending it). */
   onOpen: (id: string) => void;
+  /** A message went out (the new-conversation slot moves to its own #id). */
+  onSent: () => void;
   usage: Usage | null;
   /** Search hit: scroll to history[at] once loaded. */
   jump: { at: number; n: number } | null;
@@ -38,10 +41,13 @@ type Props = {
 /** One content width for messages and composer, so their edges line up. */
 const COLUMN = "mx-auto w-full max-w-3xl px-6";
 
-/** A composer attachment: uploads as soon as it's added, sent as a media marker once done. */
-type Pending = { key: string; name: string; image: boolean; local: File; file?: Attachment; error?: string };
+/** A composer attachment: uploads as soon as it's added, sent as a media marker once done. local: added in this
+ * browser (absent: from the synced draft). */
+type Pending = { key: string; name: string; image: boolean; local?: File; file?: Attachment; error?: string };
+const synced = (file: Attachment): Pending => ({ key: file.path, name: file.name, image: file.image, file });
+const uploaded = (fs: Pending[]) => fs.flatMap((f) => (f.file ? [f.file] : []));
 
-export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, deliver, onDraft, onToggleSidebar, onOpen, usage, jump, onDropped }, ref) {
+export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, deliver, onDraft: onDraftEmpty, onToggleSidebar, onOpen, onSent, usage, jump, onDropped }, ref) {
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -75,21 +81,24 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     if (unlocked) input.current?.focus();
   }, [unlocked]);
 
-  // Drafts per conversation, kept across switches and reloads.
+  // Drafts per conversation (text + uploaded attachments), synced to the server: same composer on every device.
   useEffect(() => {
-    const saved = localStorage.getItem(`draft.${id}`) ?? "";
-    setDraft(saved);
-    setUnlocked(!!saved); // a kept draft means it was unlocked on purpose
+    const saved = getDraft(id);
+    setDraft(saved.text);
+    setFiles(saved.files.map(synced));
+    setUnlocked(!!(saved.text || saved.files.length)); // a kept draft means it was unlocked on purpose
     setRenaming(null);
-    setFiles([]);
     stick.current = true;
     input.current?.focus();
+    // Changed on another device: theirs, keeping uploads still running here.
+    return onDraft(id, (d) => {
+      setDraft(d.text);
+      setFiles((fs) => [...d.files.map((f) => fs.find((p) => p.file?.path === f.path) ?? synced(f)), ...fs.filter((p) => !p.file)]);
+      if (d.text || d.files.length) setUnlocked(true);
+    });
   }, [id]);
-  useEffect(() => {
-    if (draft) localStorage.setItem(`draft.${id}`, draft);
-    else localStorage.removeItem(`draft.${id}`);
-    onDraft(!draft);
-  }, [draft]);
+  useEffect(() => editDraft(id, draft, uploaded(files)), [draft, files]);
+  useEffect(() => onDraftEmpty(!draft && !files.length), [draft, files]);
 
   useLayoutEffect(() => {
     if (!log.current) return;
@@ -177,7 +186,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
 
   const uploading = files.some((f) => !f.file && !f.error);
   const failed = files.some((f) => f.error);
-  const canSend = (!!draft.trim() || files.length > 0) && !uploading && !failed;
+  const canSend = !!id && (!!draft.trim() || files.length > 0) && !uploading && !failed; // id: new-conversation slot known
 
   const addFiles = (list: FileList | File[]) => {
     for (const f of Array.from(list)) {
@@ -216,6 +225,8 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
     setScheduling(false);
     setDraft("");
     setFiles([]);
+    editDraft(id, "", []); // a fork switches conversations in the same render: the effect would miss this one
+    onSent();
     if (opt.window) return void deliver({ type: "schedule", id, text, window: opt.window }).catch(() => giveBack(kept));
     stick.current = true;
     if (!readOnly) return void deliver({ type: opt.after && running ? "enqueue" : "send", id, text }).catch(() => giveBack(kept));
@@ -231,10 +242,9 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
       restore([kept.draft]);
       return setFiles((fs) => [...kept.files, ...fs]);
     }
-    // Switched conversations meanwhile: its saved draft gets the text (and the attachments as markers).
-    const key = `draft.${kept.id}`;
-    const text = withAttachments(kept.draft, kept.files.map((f) => f.file!));
-    localStorage.setItem(key, [text, localStorage.getItem(key) ?? ""].filter((x) => x.trim()).join("\n\n"));
+    // Switched conversations meanwhile: its draft gets it back.
+    const d = getDraft(kept.id);
+    editDraftElsewhere(kept.id, [kept.draft, d.text].filter((x) => x.trim()).join("\n\n"), [...uploaded(kept.files), ...d.files]);
   };
 
   return (

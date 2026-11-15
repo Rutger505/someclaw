@@ -1,3 +1,5 @@
+import type { Attachment } from "./attachments";
+
 // Browser <-> someclaw server protocol over /someclaw/ws. The server (broker) owns the gateway sockets, so turns
 // and status survive tab switches, reloads and closed browsers.
 
@@ -118,6 +120,9 @@ export type ModelOption = { ref: string; family: string; alias: string; model: s
  * the socket drops (or stays silent) before the ack. */
 export type Delivered = { nonce?: string };
 
+/** Composer content, kept on the server so every device shows it (attachments only once uploaded). */
+export type Draft = { text: string; files: Attachment[] };
+
 export type ClientMsg =
   | { type: "subscribe"; id: string | null }
   /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in);
@@ -146,6 +151,8 @@ export type ClientMsg =
   | { type: "model"; id: string; ref: string | null }
   /** Stop sending a pinned skill along (pinned again when rocky reads it again). */
   | { type: "unpin"; id: string; name: string }
+  /** Composer content of conversation `id` changed (empty = gone). Acked: the browser keeps it dirty until then. */
+  | ({ type: "draft"; id: string; draft: Draft } & Delivered)
   /** Reset to here: keep history[0..keep), delete everything after. `seen`: history length the browser showed. */
   | { type: "reset"; id: string; keep: number; seen: number };
 
@@ -159,6 +166,12 @@ export type ServerMsg =
       skills: string[] }
   | { type: "event"; id: string; event: GatewayEvent }
   | { type: "usage"; usage: Usage }
+  /** On connect: all drafts + `fresh`, the id of the new-conversation slot (same on every device, a URL without #id). */
+  | { type: "drafts"; drafts: Record<string, Draft>; fresh: string }
+  /** Another browser changed a draft (null = cleared). */
+  | { type: "draft"; id: string; draft: Draft | null }
+  /** The new-conversation slot got its first message: this is the next one. */
+  | { type: "fresh"; id: string }
   | { type: "search"; seq: number; q: string; results: SearchResult[]; error: string | null }
   | { type: "error"; message: string }
   /** Received the client message with this nonce (processing errors still come as `error`). */

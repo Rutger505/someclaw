@@ -1038,9 +1038,29 @@ function readOnly(id: string) {
   return ch ? `${ch} conversation: read-only here (/ws/chat can't write into channel sessions); send it as a fork instead` : null;
 }
 
+/** The new-conversation slot got a message: it's a conversation now, every browser moves to a fresh slot. */
+function rotateFresh() {
+  const old = state.fresh;
+  state.fresh = crypto.randomUUID();
+  save();
+  console.log(`broker: new-conversation slot ${old} started, next is ${state.fresh}`);
+  for (const ws of clients) send(ws, { type: "fresh", id: state.fresh });
+}
+
 async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
   const fail = (message: string) => send(ws, { type: "error", message });
+  if ((m.type === "send" || m.type === "enqueue" || m.type === "schedule") && m.id === state.fresh && m.text.trim()) rotateFresh();
   switch (m.type) {
+    case "draft": {
+      const d = m.draft.text.trim() || m.draft.files.length ? { text: m.draft.text, files: m.draft.files } : null;
+      if (d) state.drafts[m.id] = d;
+      else if (state.drafts[m.id]) delete state.drafts[m.id];
+      else return;
+      save();
+      for (const c of clients) if (c !== ws) send(c, { type: "draft", id: m.id, draft: d });
+      return;
+    }
+
     case "subscribe":
       ws.data.sub = m.id;
       if (!m.id) return;
@@ -1291,6 +1311,7 @@ export async function authorize(token: string | null) {
 export const websocket: WebSocketHandler<Client> = {
   open(ws: ServerWebSocket<Client>) {
     clients.add(ws);
+    send(ws, { type: "drafts", drafts: state.drafts, fresh: state.fresh });
     refresh();
     const u = usage();
     if (u.at || u.error) send(ws, { type: "usage", usage: u });

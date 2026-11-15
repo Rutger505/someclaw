@@ -27,13 +27,16 @@ export function App() {
   );
 }
 
-// The open conversation lives in the URL hash: reload keeps it, back/forward switch.
-const hashId = () => decodeURIComponent(location.hash.slice(1));
-const newId = () => crypto.randomUUID();
+// The open conversation lives in the URL hash: reload keeps it, back/forward switch. No hash: the new-conversation slot,
+// one id from the server shared by all devices (same draft on phone and PC), so a bookmark/PWA start opens it.
+const hashId = () => decodeURIComponent(location.hash.slice(1)) || null;
 
 function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [openId, setOpenId] = useState(() => hashId() || newId());
-  const { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search } = useBroker(openId, onUnauthorized);
+  const [route, setRoute] = useState(hashId);
+  const [freshId, setFreshId] = useState(() => localStorage.getItem("fresh") ?? "");
+  const openId = route ?? freshId;
+  const { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search, fresh } = useBroker(openId, onUnauthorized);
+  useEffect(() => setFreshId(fresh), [fresh]);
   /** Search hit to scroll to once that conversation's history is in; n: a repeat click scrolls again. */
   const [jump, setJump] = useState<{ id: string; at: number; n: number } | null>(null);
   const side = useRef<SidebarHandle>(null);
@@ -46,15 +49,16 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
 
   useVersionReload(draftEmpty);
 
-  const open = (id: string) => {
-    setOpenId(id);
+  /** null: the new-conversation slot. */
+  const open = (id: string | null) => {
+    setRoute(id);
     if (innerWidth < 768) setSidebar(false);
   };
   useEffect(() => {
-    if (hashId() !== openId) history.pushState(null, "", `#${encodeURIComponent(openId)}`);
-  }, [openId]);
+    if (hashId() !== route) history.pushState(null, "", route ? `#${encodeURIComponent(route)}` : location.pathname + location.search);
+  }, [route]);
   useEffect(() => {
-    const onHash = () => hashId() && setOpenId(hashId());
+    const onHash = () => setRoute(hashId());
     addEventListener("hashchange", onHash);
     addEventListener("popstate", onHash);
     return () => (removeEventListener("hashchange", onHash), removeEventListener("popstate", onHash));
@@ -75,7 +79,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
         return;
       }
       case "new":
-        return open(newId());
+        return open(null);
       case "next":
       case "prev": {
         const c = order[at < 0 ? 0 : at + (action === "next" ? 1 : -1)];
@@ -133,7 +137,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
             link={link}
             openId={openId}
             onOpen={open}
-            onNew={() => open(newId())}
+            onNew={() => open(null)}
             onArchive={(id, archived) => send({ type: "archive", id, archived })}
             onHelp={() => setHelp(true)}
           />
@@ -153,6 +157,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
           onDraft={setDraftEmpty}
           onToggleSidebar={() => setSidebar((x) => !x)}
           onOpen={open}
+          onSent={() => !route && setRoute(openId)}
           // overlay sidebar (narrow screens) covers the composer the files went into
           onDropped={() => innerWidth < 768 && setSidebar(false)}
         />

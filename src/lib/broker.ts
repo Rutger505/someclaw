@@ -3,6 +3,7 @@ import type { ClientMsg, Delivered, Conversation, GatewayEvent, ServerMsg, ToolL
 import { getToken } from "./gateway";
 import { cacheGet, cachePut } from "./cache";
 import { onAway } from "./away";
+import { disconnectDrafts, remoteDraft, setDrafts } from "./drafts";
 
 /** stale: from the page-load cache (src/lib/cache.ts), the broker's fresh one hasn't arrived yet. */
 export type Snapshot = { stale?: true } & { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null; skills: string[] };
@@ -11,8 +12,10 @@ export type Search = { q: string; results: SearchResult[]; error: string | null;
 
 const ACK_MS = 8000;
 
-/** One /someclaw/ws socket to the broker: conversation list for the sidebar + the open conversation. */
+/** One /someclaw/ws socket to the broker: conversation list for the sidebar + the open conversation ("" = none yet).
+ * Also syncs composer drafts (lib/drafts.ts) and returns `fresh`, the id of the shared new-conversation slot. */
 export function useBroker(openId: string, onUnauthorized: () => void) {
+  const [fresh, setFresh] = useState(() => localStorage.getItem("fresh") ?? "");
   const [list, setList] = useState<Conversation[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -39,10 +42,11 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
     unacked.current.clear();
   };
   /** Sends a composer message; resolves once the broker has it, rejects (error shown) when it may not have. */
-  const deliver = useCallback((m: ClientMsg & Delivered): Promise<void> => {
+  /** quiet: no error shown (drafts: still unsynced, sent again on reconnect). */
+  const deliver = useCallback((m: ClientMsg & Delivered, quiet = false): Promise<void> => {
     const sock = ws.current;
     const fail = (why: string) => {
-      setErrors((e) => [...e, { at: Date.now(), message: `${m.type} not sent (${why}): put back in the composer` }]);
+      if (!quiet) setErrors((e) => [...e, { at: Date.now(), message: `${m.type} not sent (${why}): put back in the composer` }]);
       return Promise.reject(new Error(why));
     };
     if (sock?.readyState !== WebSocket.OPEN) return fail("not connected");
@@ -71,7 +75,7 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
         attempt = 0;
         // Reconnected (e.g. someclaw deploy restart): the close errors are resolved.
         setErrors((x) => x.filter((e) => !e.link));
-        sock.send(JSON.stringify({ type: "subscribe", id: openRef.current } satisfies ClientMsg));
+        sock.send(JSON.stringify({ type: "subscribe", id: openRef.current || null } satisfies ClientMsg));
       };
       sock.onclose = (e) => closed(e.code, e.reason);
       // Silent socket: a dead one's close handshake can hang for minutes, so drop it now and reconnect. Its late
@@ -84,6 +88,7 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
       };
       const closed = async (code: number, reason: string) => {
         if (stopped || ws.current !== sock) return;
+        disconnectDrafts();
         lose(code === 4000 ? `no reply in ${ACK_MS / 1000} s` : `socket closed ${code}`);
         setLink("closed");
         // The upgrade's 401 is invisible here: ask over REST.
@@ -115,6 +120,16 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
               return { ...s, turn: [...s.turn, ev] };
             });
             break;
+          case "drafts":
+            setFresh(m.fresh);
+            setDrafts(m.drafts, (id, draft) => deliver({ type: "draft", id, draft }, true));
+            break;
+          case "draft":
+            remoteDraft(m.id, m.draft);
+            break;
+          case "fresh":
+            setFresh(m.id);
+            break;
           case "usage":
             setUsage(m.usage);
             break;
@@ -145,6 +160,7 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
         sock.onmessage = sock.onclose = null;
         const closed = sock.readyState === WebSocket.CLOSED ? undefined : new Promise((r) => sock.addEventListener("close", r, { once: true }));
         sock.close(1000, "leaving page");
+        disconnectDrafts();
         lose("page left");
         return closed;
       },
@@ -165,9 +181,10 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
   }, []);
   useEffect(() => {
     setSnap(null);
-    cacheGet<Snapshot>(`snap:${openId}`).then((c) => c && openRef.current === openId && setSnap((x) => x ?? { ...c, stale: true }));
-    if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "subscribe", id: openId } satisfies ClientMsg));
+    if (openId) cacheGet<Snapshot>(`snap:${openId}`).then((c) => c && openRef.current === openId && setSnap((x) => x ?? { ...c, stale: true }));
+    if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "subscribe", id: openId || null } satisfies ClientMsg));
   }, [openId]);
+  useEffect(() => void (fresh && localStorage.setItem("fresh", fresh)), [fresh]);
 
   // Message search (server/search.ts); titles are matched in the browser. Debounced, latest query wins.
   const searchTimer = useRef<Timer>(undefined);
@@ -200,5 +217,5 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
   useEffect(() => onAway({ leave: flush, back: () => {} }), []);
 
   const dismissError = (at: number) => setErrors((x) => x.filter((e) => e.at !== at));
-  return { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search };
+  return { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search, fresh };
 }
