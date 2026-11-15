@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, GitBranch, ListPlus, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, GitBranch, ImagePlus, ListPlus, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Outbox, Resume, Scheduled, TurnModel, Usage } from "../../shared/protocol";
@@ -52,6 +52,8 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const [files, setFiles] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
+  // accept=image/* makes Android open its photo picker / gallery chooser (Google Photos); the plain picker only offers files.
+  const photoPicker = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const input = useRef<EditorHandle>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -454,6 +456,25 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                     e.target.value = "";
                   }}
                 />
+                <input
+                  ref={photoPicker}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files) addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => photoPicker.current?.click()}
+                  title="Attach photos"
+                  className="grid size-8 place-items-center rounded-full text-muted transition-colors hover:bg-elevated hover:text-fg"
+                >
+                  <ImagePlus size={16} />
+                </button>
                 <button
                   type="button"
                   onClick={() => picker.current?.click()}
