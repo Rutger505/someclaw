@@ -50,13 +50,58 @@ export async function tokenValid() {
   return true;
 }
 
-/** POST /someclaw/upload: saves the file on the VM, returns the path to put in a media marker. */
-export async function uploadFile(f: File): Promise<Attachment> {
-  const res = await fetch(`/someclaw/upload?name=${encodeURIComponent(f.name)}`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${getToken()}`, "content-type": f.type || "application/octet-stream" },
-    body: f,
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Picked files are read one at a time: Firefox for Android fails one of several photos picked at once when they're
+ * read in parallel (the upload never reaches the server: "NetworkError when attempting to fetch resource"). */
+let reading: Promise<unknown> = Promise.resolve();
+function readFile(f: File): Promise<ArrayBuffer> {
+  const run = reading.then(async () => {
+    for (let i = 0; ; i++) {
+      try {
+        return await f.arrayBuffer();
+      } catch (e) {
+        if (i === 2) throw new Error(`read ${f.name}: ${(e as Error).message}`);
+        await sleep(300 * (i + 1));
+      }
+    }
   });
-  if (!res.ok) throw new HttpError(res.status, `upload ${f.name}: ${res.status} ${await res.text()}`);
-  return res.json();
+  reading = run.catch(() => {});
+  return run;
+}
+
+/** POST /someclaw/upload: saves the file on the VM, returns the path to put in a media marker. Network errors retry. */
+export async function uploadFile(f: File): Promise<Attachment> {
+  const body = await readFile(f);
+  for (let i = 0; ; i++) {
+    let res: Response;
+    try {
+      res = await fetch(`/someclaw/upload?name=${encodeURIComponent(f.name)}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${getToken()}`, "content-type": f.type || "application/octet-stream" },
+        body,
+      });
+    } catch (e) {
+      if (i === 2) throw new Error(`upload ${f.name}: ${(e as Error).message}`);
+      await sleep(500 * (i + 1));
+      continue;
+    }
+    if (!res.ok) throw new HttpError(res.status, `upload ${f.name}: ${res.status} ${await res.text()}`);
+    return res.json();
+  }
+}
+
+/** An uploaded file back (GET /someclaw/upload), cached per path for the page's lifetime: uploads never change. */
+const downloads = new Map<string, Promise<Blob>>();
+export function fetchUpload(path: string): Promise<Blob> {
+  let p = downloads.get(path);
+  if (!p) {
+    p = fetch(`/someclaw/upload?path=${encodeURIComponent(path)}`, { headers: { authorization: `Bearer ${getToken()}` } }).then(async (res) => {
+      if (!res.ok) throw new HttpError(res.status, `${res.status} ${await res.text()}`);
+      return res.blob();
+    });
+    p.catch(() => downloads.delete(path)); // errors may be temporary
+    downloads.set(path, p);
+  }
+  return p;
 }

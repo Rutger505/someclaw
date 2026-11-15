@@ -1,7 +1,7 @@
 // File uploads from the composer. Saved under the agent workspace (the vision pipeline and file tools read from there;
 // it's outside the config repo's .gitignore whitelist, so never committed). The browser puts the returned path in a
 // media marker (shared/attachments.ts).
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { IMAGE_TYPES, type Attachment } from "../shared/attachments";
 import { tokenValid } from "./gateway";
 
@@ -35,4 +35,25 @@ export async function upload(req: Request): Promise<Response> {
   const file: Attachment = { name, path, image: IMAGE_TYPES.includes(type) };
   console.log(`upload: ${path} (${body.length} B, ${type || "no type"})`);
   return Response.json(file);
+}
+
+const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", avif: "image/avif" };
+
+/** GET /someclaw/upload?path=<path from a marker>: the file back for previews. Only files under the upload dir. */
+export async function download(req: Request): Promise<Response> {
+  const token = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+  if (!token || !(await tokenValid(token))) return new Response("unauthorized: pair again", { status: 401 });
+  const path = new URL(req.url).searchParams.get("path") ?? "";
+  let real: string;
+  try {
+    real = await realpath(path);
+  } catch (e) {
+    return new Response(`${path}: ${(e as Error).message}`, { status: 404 });
+  }
+  const root = await realpath(DIR).catch(() => DIR);
+  if (!real.startsWith(`${root}/`)) return new Response(`${path}: outside ${DIR}, no preview`, { status: 403 });
+  const ext = real.split(".").pop()!.toLowerCase();
+  return new Response(Bun.file(real), {
+    headers: { "content-type": TYPES[ext] ?? "application/octet-stream", "cache-control": "private, max-age=86400", "x-content-type-options": "nosniff" },
+  });
 }

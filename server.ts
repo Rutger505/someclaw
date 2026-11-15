@@ -3,7 +3,7 @@
 import { watch } from "node:fs";
 import { authorize, websocket, type Client } from "./server/broker";
 import { tokenValid } from "./server/gateway";
-import { upload } from "./server/uploads";
+import { download, upload } from "./server/uploads";
 import { flush } from "./server/state";
 import * as pairing from "./server/pairing";
 
@@ -74,6 +74,7 @@ Bun.serve<Client, never>({
     }
 
     if (url.pathname === "/someclaw/upload" && req.method === "POST") return upload(req);
+    if (url.pathname === "/someclaw/upload" && req.method === "GET") return download(req);
 
     // Pairing by approval (server/pairing.ts): request + poll from the browser, list/approve/deny from bin/pair.
     if (url.pathname === "/someclaw/pair/request" && req.method === "POST") {

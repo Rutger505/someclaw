@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, FileText, GitBranch, Image, ListPlus, Loader, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, GitBranch, ListPlus, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Outbox, Resume, Scheduled, TurnModel, Usage } from "../../shared/protocol";
@@ -11,6 +11,7 @@ import { convTitle, IconButton, Kbd, StatusIcon } from "./Sidebar";
 import { Plan, ToolGroup } from "./Tools";
 import { ModelSelector } from "./ModelSelector";
 import { clipboardFiles, Editor, type EditorHandle } from "./Editor";
+import { AttachmentChip } from "./Attachments";
 
 /** unlock: true when it applied (channel thread); elsewhere the key stays with the browser. */
 /** stop: stops the running turn; its outbox (messages after it) goes back into the composer. */
@@ -36,7 +37,7 @@ type Props = {
 const COLUMN = "mx-auto w-full max-w-3xl px-6";
 
 /** A composer attachment: uploads as soon as it's added, sent as a media marker once done. */
-type Pending = { key: string; name: string; image: boolean; file?: Attachment; error?: string };
+type Pending = { key: string; name: string; image: boolean; local: File; file?: Attachment; error?: string };
 
 export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar, onOpen, usage, jump, onDropped }, ref) {
   const [draft, setDraft] = useState("");
@@ -165,7 +166,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   const addFiles = (list: FileList | File[]) => {
     for (const f of Array.from(list)) {
       const key = crypto.randomUUID();
-      setFiles((fs) => [...fs, { key, name: f.name, image: f.type.startsWith("image/") }]);
+      setFiles((fs) => [...fs, { key, name: f.name, image: f.type.startsWith("image/"), local: f }]);
       uploadFile(f).then(
         (file) => setFiles((fs) => fs.map((p) => (p.key === key ? { ...p, file, image: file.image } : p))),
         (e) => setFiles((fs) => fs.map((p) => (p.key === key ? { ...p, error: (e as Error).message } : p))),
@@ -362,17 +363,16 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
             {files.length > 0 && (
               <div className="flex flex-wrap gap-1.5 px-3 pt-3">
                 {files.map((f) => (
-                  <span
+                  <AttachmentChip
                     key={f.key}
-                    title={f.error ?? f.file?.path ?? "uploading…"}
-                    className={`flex max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-xs ring-1 ${f.error ? "bg-err/10 text-err ring-err/40" : "bg-elevated text-fg-2 ring-line"}`}
-                  >
-                    {f.error ? <CircleAlert size={13} /> : !f.file ? <Loader size={13} className="animate-spin" /> : f.image ? <Image size={13} /> : <FileText size={13} />}
-                    <span className="min-w-0 truncate">{f.error ?? f.name}</span>
-                    <button type="button" onClick={() => setFiles((fs) => fs.filter((p) => p.key !== f.key))} title="Remove" className="text-faint hover:text-fg">
-                      <X size={12} />
-                    </button>
-                  </span>
+                    name={f.name}
+                    image={f.image}
+                    local={f.local}
+                    path={f.file?.path}
+                    loading={!f.file}
+                    error={f.error}
+                    onRemove={() => setFiles((fs) => fs.filter((p) => p.key !== f.key))}
+                  />
                 ))}
               </div>
             )}
@@ -548,10 +548,7 @@ function RowBody({ item, reset, onAnswer }: RowProps) {
           {files.length > 0 && (
             <div className="flex flex-wrap justify-end gap-1.5">
               {files.map((f) => (
-                <span key={f.path} title={f.path} className="flex max-w-full items-center gap-1.5 rounded-lg bg-elevated px-2 py-1 text-xs text-fg-2 ring-1 ring-line">
-                  {f.image ? <Image size={13} /> : <FileText size={13} />}
-                  <span className="min-w-0 truncate">{f.name}</span>
-                </span>
+                <AttachmentChip key={f.path} name={f.name} image={f.image} path={f.path} />
               ))}
             </div>
           )}
