@@ -285,6 +285,11 @@ export function resendPrompt(sent: string, events: GatewayEvent[], restarted: st
       lines.push(`Tool call ${String(e.name ?? "?")}: ${clip(args, RESEND_MAX_ARG)}`);
     } else if (e.type === "tool_result") lines.push(`Result: ${clip(String(e.output ?? "").trim(), RESEND_MAX_OUTPUT)}`);
     else if (e.type === "user") lines.push(`User, mid-turn: ${String(e.content ?? "")}`);
+    else if (e.type === "subagent_event") {
+      const s = e.event as GatewayEvent;
+      if (s.type === "tool_call") lines.push(`Subagent (of ${String(e.parent_call_id)}) tool call ${String(s.name ?? "?")}: ${clip(typeof s.args === "string" ? s.args : JSON.stringify(s.args ?? {}), RESEND_MAX_ARG)}`);
+      else if (s.type === "tool_result") lines.push(`Subagent result: ${clip(String(s.output ?? "").trim(), RESEND_MAX_OUTPUT)}`);
+    }
   }
   // oldest dropped first
   let kept = lines;

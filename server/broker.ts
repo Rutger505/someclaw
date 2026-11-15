@@ -23,6 +23,7 @@ import { pinnedSkills, skillsPrompt, unpinSkill } from "./skills";
 import { fullUntil, onUsage, pollUsage, rateLimitReset, startUsagePoller, usage } from "./usage";
 import { search } from "./search";
 import { previewText } from "../shared/attachments";
+import { keepSubagentEvent } from "../shared/subagent";
 import {
   RESUME_TEXT,
   forkPrompt,
@@ -395,6 +396,15 @@ function onFrame(c: Conv, m: GatewayEvent) {
     c.turn = c.turn.filter((e) => e.type !== "chunk");
     return emit(c.id, m);
   }
+  if (m.type === "subagent_event") {
+    const kept = keepSubagentEvent(m, c.tools);
+    if (!kept) {
+      // over the limit: dropped quietly (the kept steps end in a truncated marker)
+      if (!c.tools.some((e) => e.type === "tool_call" && e.id === m.parent_call_id)) console.warn(`broker: ${c.id}: subagent_event for unknown parent call ${JSON.stringify(m.parent_call_id)}, dropped`);
+      return;
+    }
+    m = kept;
+  }
   record(c, m);
   if (STEP_TYPES.has(m.type)) {
     c.tools.push(m);
@@ -559,7 +569,7 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
 const RECOVER_POLL_MS = 3_000; // gateway up, turn still running there: wait for it to end
 const RECOVER_GIVE_UP_MS = 30 * 60_000; // gateway unreachable this long: stop waiting
 const MAX_ATTACH_TRIES = 3;
-const STEP_TYPES = new Set(["tool_call", "tool_result", "plan"]); // persisted with the turn (gateway history has none)
+const STEP_TYPES = new Set(["tool_call", "tool_result", "plan", "subagent_event"]); // persisted with the turn (gateway history has none)
 
 function keepStep(c: Conv, e: GatewayEvent) {
   if (!c.rec) return;

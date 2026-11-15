@@ -1,7 +1,9 @@
 import { assistantParts, parseHandoff, parseResume, toolResult, type CronRun, type ForkRef, type GatewayEvent, type Handoff, type LoadedSkill, type Resent, type TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
-export type Tool = { id: string; name: string; args: unknown; output?: string };
+/** Steps of a spawn_subagent call (subagent_event frames). ended: subagent_end seen; truncated: broker hit its limit. */
+export type Subagent = { steps: Tool[]; ended: boolean; success?: boolean; error?: string | null; truncated?: number };
+export type Tool = { id: string; name: string; args: unknown; output?: string; sub?: Subagent };
 export type PlanEntry = { content: string; activeForm?: string; status: string };
 export type Item =
   /** at: index in the persisted history (reset to here); absent for the running turn. */
@@ -87,6 +89,9 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       if (last?.kind === "agent") last.live = false;
       break;
     }
+    case "subagent_event":
+      addSubagentEvent(items, e);
+      break;
     case "error":
       items.push({ kind: "meta", text: `error: ${String(e.message ?? JSON.stringify(e))}`, error: true });
       break;
@@ -98,6 +103,36 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       break;
     default:
       items.push({ kind: "meta", text: JSON.stringify(e) });
+  }
+}
+
+/** Nests a subagent step under its spawn_subagent call; no such call (anywhere in items): ignored. */
+function addSubagentEvent(items: Item[], e: GatewayEvent) {
+  const ev = e.event as GatewayEvent | undefined;
+  if (!ev || typeof ev !== "object") return;
+  let parent: Tool | undefined;
+  for (let i = items.length - 1; i >= 0 && !parent; i--) {
+    const x = items[i]!;
+    if (x.kind === "tools") parent = x.tools.findLast((t) => t.id && t.id === e.parent_call_id);
+  }
+  if (!parent) return;
+  const sub = (parent.sub ??= { steps: [], ended: false });
+  switch (ev.type) {
+    case "tool_call":
+      sub.steps.push({ id: String(ev.id ?? ""), name: String(ev.name ?? "?"), args: ev.args ?? {} });
+      break;
+    case "tool_result": {
+      const t = sub.steps.findLast((t) => (ev.id ? t.id === ev.id : t.name === ev.name && t.output === undefined));
+      if (t) t.output = String(ev.output ?? "");
+      else sub.steps.push({ id: String(ev.id ?? ""), name: String(ev.name ?? "?"), args: {}, output: String(ev.output ?? "") });
+      break;
+    }
+    case "subagent_end":
+      Object.assign(sub, { ended: true, success: ev.success !== false, error: ev.error == null ? null : String(ev.error) });
+      break;
+    case "truncated":
+      sub.truncated = Number(ev.limit) || sub.steps.length;
+      break;
   }
 }
 

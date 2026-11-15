@@ -1,6 +1,6 @@
-import { Check, ChevronDown, Circle, ListTodo, Wrench, X } from "lucide-react";
+import { Bot, Check, ChevronDown, Circle, ListTodo, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { PlanEntry, Tool } from "../lib/items";
+import type { PlanEntry, Subagent, Tool } from "../lib/items";
 
 const ROW = 24; // px, every row is h-6 so the ticker can scroll by whole rows
 const VISIBLE = 3;
@@ -45,7 +45,10 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
       {open ? (
         <div className="max-h-[32rem] overflow-y-auto font-mono text-xs">
           {tools.map((t, i) => (
-            <ToolDetails key={t.id || i} t={t} live={live} focused={focus === i} />
+            <div key={t.id || i}>
+              <ToolDetails t={t} live={live} focused={focus === i} />
+              {t.sub && <SubagentSteps sub={t.sub} live={live} />}
+            </div>
           ))}
         </div>
       ) : (
@@ -92,6 +95,7 @@ function ToolLine({ t, live, onClick }: { t: Tool; live: boolean; onClick: () =>
     >
       <Status t={t} live={live} />
       <span className="shrink-0 text-accent-light">{t.name}</span>
+      {t.sub && <span className="shrink-0 text-muted">{steps(t.sub)}</span>}
       <span className="truncate text-faint">{brief(t.args)}</span>
     </button>
   );
@@ -117,6 +121,36 @@ function ToolDetails({ t, live, focused }: { t: Tool; live: boolean; focused: bo
         {t.output !== undefined && `\n\n← ${t.output}`}
       </pre>
     </details>
+  );
+}
+
+const steps = (sub: Subagent) => `${sub.steps.length} step${sub.steps.length === 1 ? "" : "s"}`;
+
+/** What a spawn_subagent call's subagent did, nested under it; collapsed until clicked. Its own running state: until
+ * subagent_end, while the turn is live. */
+function SubagentSteps({ sub, live }: { sub: Subagent; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  const running = live && !sub.ended;
+  return (
+    <div className="mb-1 ml-5 border-l border-line pl-3">
+      <button onClick={() => setOpen((x) => !x)} className="flex h-6 items-center gap-2 text-left text-muted transition-colors hover:text-fg-2">
+        <Bot size={12} />
+        <span>subagent: {steps(sub)}</span>
+        <ChevronDown size={12} className={`transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
+        {running && <span className="text-warn">· running</span>}
+        {!live && !sub.ended && <span className="text-err">· no subagent_end</span>}
+        {sub.ended && !sub.success && <span className="text-err">· failed</span>}
+      </button>
+      {sub.ended && !sub.success && <div className="whitespace-pre-wrap break-words text-err">{sub.error || "subagent_end: success=false, no error"}</div>}
+      {open && (
+        <>
+          {sub.steps.map((t, i) => (
+            <ToolDetails key={t.id || i} t={t} live={running} focused={false} />
+          ))}
+          {sub.truncated !== undefined && <div className="text-faint">later steps not kept (someclaw keeps {sub.truncated} per subagent)</div>}
+        </>
+      )}
+    </div>
   );
 }
 
