@@ -154,7 +154,9 @@ export type ClientMsg =
   /** Composer content of conversation `id` changed (empty = gone). Acked: the browser keeps it dirty until then. */
   | ({ type: "draft"; id: string; draft: Draft } & Delivered)
   /** Reset to here: keep history[0..keep), delete everything after. `seen`: history length the browser showed. */
-  | { type: "reset"; id: string; keep: number; seen: number };
+  | { type: "reset"; id: string; keep: number; seen: number }
+  /** Liveness: only the ack matters. A socket that died silently (sleep, network switch, proxy) still reads OPEN. */
+  | ({ type: "ping" } & Delivered);
 
 export type ServerMsg =
   | { type: "conversations"; list: Conversation[]; listError: string | null }

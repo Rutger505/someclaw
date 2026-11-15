@@ -11,6 +11,7 @@ export type Link = "connecting" | "open" | "closed";
 export type Search = { q: string; results: SearchResult[]; error: string | null; loading: boolean };
 
 const ACK_MS = 8000;
+const PING_MS = 20_000;
 
 /** One /someclaw/ws socket to the broker: conversation list for the sidebar + the open conversation ("" = none yet).
  * Also syncs composer drafts (lib/drafts.ts) and returns `fresh`, the id of the shared new-conversation slot. */
@@ -185,6 +186,31 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "subscribe", id: openId || null } satisfies ClientMsg));
   }, [openId]);
   useEffect(() => void (fresh && localStorage.setItem("fresh", fresh)), [fresh]);
+
+  // Heartbeat: a page that only watches never sends, so a silently dead socket (still OPEN, green dot) froze it until
+  // a refresh. Ping every PING_MS and on return/network change; no ack in ACK_MS drops it and reconnects (deliver).
+  useEffect(() => {
+    let busy = false;
+    const ping = () => {
+      if (busy || ws.current?.readyState !== WebSocket.OPEN) return;
+      busy = true;
+      deliver({ type: "ping" }, true).then(
+        () => (busy = false),
+        () => (busy = false),
+      );
+    };
+    const visible = () => document.visibilityState === "visible" && ping();
+    const t = setInterval(ping, PING_MS);
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("online", ping);
+    window.addEventListener("focus", ping);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("online", ping);
+      window.removeEventListener("focus", ping);
+    };
+  }, [deliver]);
 
   // Message search (server/search.ts); titles are matched in the browser. Debounced, latest query wins.
   const searchTimer = useRef<Timer>(undefined);

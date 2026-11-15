@@ -1051,6 +1051,8 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
   const fail = (message: string) => send(ws, { type: "error", message });
   if ((m.type === "send" || m.type === "enqueue" || m.type === "schedule") && m.id === state.fresh && m.text.trim()) rotateFresh();
   switch (m.type) {
+    case "ping":
+      return; // acked in message()
     case "draft": {
       const d = m.draft.text.trim() || m.draft.files.length ? { text: m.draft.text, files: m.draft.files } : null;
       if (d) state.drafts[m.id] = d;
