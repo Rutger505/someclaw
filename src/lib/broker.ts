@@ -34,15 +34,17 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
     ws.current.send(JSON.stringify(m));
   }, []);
 
-  // Composer messages until the broker acks them. A phone that slept or switched networks can keep a dead socket
-  // that still reads OPEN: no ack in ACK_MS closes it, which rejects everything unacked (and reconnects).
+  // Composer messages until the broker answers done/rejected. A phone that slept or switched networks can keep a dead
+  // socket that still reads OPEN: no ack in ACK_MS closes it, which rejects everything unacked (and reconnects).
+  // Acked but lost before done/rejected: resolved, the broker has it (giving it back could send it twice).
   const kill = useRef<(sock: WebSocket) => void>(() => {});
-  const unacked = useRef(new Map<string, { resolve: () => void; reject: (e: Error) => void }>());
+  const unacked = useRef(new Map<string, { acked: boolean; resolve: () => void; reject: (e: Error) => void }>());
   const lose = (why: string) => {
-    for (const p of unacked.current.values()) p.reject(new Error(why));
+    for (const p of unacked.current.values()) p.acked ? p.resolve() : p.reject(new Error(why));
     unacked.current.clear();
   };
-  /** Sends a composer message; resolves once the broker has it, rejects (error shown) when it may not have. */
+  /** Sends a composer message; resolves once the broker handled it, rejects (error shown) when it may not have it or
+   * refused it. */
   /** quiet: no error shown (drafts: still unsynced, sent again on reconnect). */
   const deliver = useCallback((m: ClientMsg & Delivered, quiet = false): Promise<void> => {
     const sock = ws.current;
@@ -52,8 +54,8 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
     };
     if (sock?.readyState !== WebSocket.OPEN) return fail("not connected");
     const nonce = crypto.randomUUID();
-    const acked = new Promise<void>((resolve, reject) => unacked.current.set(nonce, { resolve, reject }));
-    const timer = setTimeout(() => unacked.current.has(nonce) && kill.current(sock), ACK_MS);
+    const acked = new Promise<void>((resolve, reject) => unacked.current.set(nonce, { acked: false, resolve, reject }));
+    const timer = setTimeout(() => unacked.current.get(nonce)?.acked === false && kill.current(sock), ACK_MS);
     sock.send(JSON.stringify({ ...m, nonce }));
     return acked.then(
       () => clearTimeout(timer),
@@ -137,8 +139,17 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
           case "search":
             if (m.seq === seq.current) setFound({ q: m.q, results: m.results, error: m.error, loading: false });
             break;
-          case "ack":
+          case "ack": {
+            const p = unacked.current.get(m.nonce);
+            if (p) p.acked = true;
+            break;
+          }
+          case "done":
             unacked.current.get(m.nonce)?.resolve();
+            unacked.current.delete(m.nonce);
+            break;
+          case "rejected":
+            unacked.current.get(m.nonce)?.reject(new Error(m.message));
             unacked.current.delete(m.nonce);
             break;
           case "error":

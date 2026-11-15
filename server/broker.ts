@@ -98,6 +98,7 @@ let sessions: GatewaySession[] = [];
 let runningElsewhere = new Set<string>(); // turns started outside someclaw (dashboard, WhatsApp)
 let listError: string | null = null;
 let listDown = false; // last refresh failed because the gateway was down
+let listed = false; // `sessions` loaded at least once (empty before: every channel session would look writable)
 const titling = new Set<string>();
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -191,6 +192,7 @@ function refresh() {
       backfillTitles();
       listError = null;
       listDown = false;
+      listed = true;
     } catch (e) {
       listError = msg(e);
       listDown = gatewayDown(e);
@@ -1033,7 +1035,11 @@ function transcript(h: HistoryMessage[]) {
 
 // ---------- browser messages ----------
 
-function readOnly(id: string) {
+/** Why `id` can't be written to from here, or null. Waits for the first session list: before it, a channel session
+ * (WhatsApp) looked writable and a message went into a new gateway session under the same id. */
+async function readOnly(id: string) {
+  if (!listed) await refresh();
+  if (!listed) return `session list not loaded yet (${listError}): can't tell whether this is a channel session`;
   const ch = session(id)?.channel_id;
   return ch ? `${ch} conversation: read-only here (/ws/chat can't write into channel sessions); send it as a fork instead` : null;
 }
@@ -1047,8 +1053,8 @@ function rotateFresh() {
   for (const ws of clients) send(ws, { type: "fresh", id: state.fresh });
 }
 
-async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
-  const fail = (message: string) => send(ws, { type: "error", message });
+/** fail: refuse `m` (message with a nonce: rejected, the browser gives its text back; else a plain error). */
+async function handle(ws: ServerWebSocket<Client>, m: ClientMsg, fail: (message: string) => void = (message) => send(ws, { type: "error", message })) {
   if ((m.type === "send" || m.type === "enqueue" || m.type === "schedule") && m.id === state.fresh && m.text.trim()) rotateFresh();
   switch (m.type) {
     case "ping":
@@ -1074,7 +1080,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     case "send": {
       const text = m.text.trim();
       if (!text) return;
-      const ro = readOnly(m.id);
+      const ro = await readOnly(m.id);
       if (ro) return fail(ro);
       const c = conv(m.id);
       // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
@@ -1118,10 +1124,10 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     case "enqueue": {
       const text = m.text.trim();
       if (!text) return;
-      const ro = readOnly(m.id);
+      const ro = await readOnly(m.id);
       if (ro) return fail(ro);
       const c = conv(m.id);
-      if (c.status !== "running" && !c.finishing && !runningElsewhere.has(m.id)) return handle(ws, { type: "send", id: m.id, text });
+      if (c.status !== "running" && !c.finishing && !runningElsewhere.has(m.id)) return handle(ws, { type: "send", id: m.id, text }, fail);
       (state.outbox[m.id] ??= { items: [], held: null }).items.push(text);
       save();
       console.log(`broker: ${m.id}: message queued after the running turn (${state.outbox[m.id]!.items.length} in outbox)`);
@@ -1168,7 +1174,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
     case "schedule": {
       const text = m.text.trim();
       if (!text) return;
-      const ro = readOnly(m.id);
+      const ro = await readOnly(m.id);
       if (ro) return fail(ro);
       try {
         schedule(m.id, text, m.window);
@@ -1241,7 +1247,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
 
     // Reset to here: history after history[keep - 1] is deleted, the model's context included.
     case "reset": {
-      const ro = readOnly(m.id);
+      const ro = await readOnly(m.id);
       if (ro) return fail(`reset: ${ro}`);
       await refresh();
       const c = conv(m.id);
@@ -1264,7 +1270,8 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg) {
 
     case "model": {
       if (m.ref !== null && !/^[\w-]+\.[\w-]+$/.test(m.ref)) return fail(`model: bad provider ref ${JSON.stringify(m.ref)}`);
-      if (readOnly(m.id)) return fail(`model: ${readOnly(m.id)}`);
+      const ro = await readOnly(m.id);
+      if (ro) return fail(`model: ${ro}`);
       if (m.ref) state.models[m.id] = m.ref;
       else delete state.models[m.id];
       save();
@@ -1328,8 +1335,13 @@ export const websocket: WebSocketHandler<Client> = {
       send(ws, { type: "error", message: `bad message: ${String(raw).slice(0, 100)}` });
       return;
     }
-    if ("nonce" in m && m.nonce) send(ws, { type: "ack", nonce: m.nonce });
-    handle(ws, m).catch((e) => send(ws, { type: "error", message: `${m.type}: ${msg(e)}` }));
+    const nonce = "nonce" in m ? m.nonce : undefined;
+    if (!nonce) return void handle(ws, m).catch((e) => send(ws, { type: "error", message: `${m.type}: ${msg(e)}` }));
+    send(ws, { type: "ack", nonce });
+    let rejected: string | null = null;
+    handle(ws, m, (message) => void (rejected ??= message))
+      .catch((e) => void (rejected ??= `${m.type}: ${msg(e)}`))
+      .finally(() => send(ws, rejected ? { type: "rejected", nonce, message: rejected } : { type: "done", nonce }));
   },
   close(ws: ServerWebSocket<Client>) {
     clients.delete(ws);

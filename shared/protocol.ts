@@ -116,8 +116,9 @@ export type TurnModel = { at: number; provider: string; model: string; input?: n
 /** A configured provider profile (providers.models.<family>.<alias>). ref = "<family>.<alias>". */
 export type ModelOption = { ref: string; family: string; alias: string; model: string };
 
-/** Composer messages carry a nonce: the broker acks it on receipt, the browser puts the text back in the composer when
- * the socket drops (or stays silent) before the ack. */
+/** Composer messages carry a nonce: the broker acks it on receipt (liveness), then answers done or rejected once
+ * handled. The browser puts the text back in the composer when the socket drops (or stays silent) before the ack, or
+ * when the broker rejects it. */
 export type Delivered = { nonce?: string };
 
 /** Composer content, kept on the server so every device shows it (attachments only once uploaded). */
@@ -176,8 +177,12 @@ export type ServerMsg =
   | { type: "fresh"; id: string }
   | { type: "search"; seq: number; q: string; results: SearchResult[]; error: string | null }
   | { type: "error"; message: string }
-  /** Received the client message with this nonce (processing errors still come as `error`). */
+  /** Received the client message with this nonce; done or rejected follows once handled. */
   | { type: "ack"; nonce: string }
+  /** Handled the client message with this nonce. */
+  | { type: "done"; nonce: string }
+  /** Refused the client message with this nonce (not sent, nothing recorded): the browser gives its text back. */
+  | { type: "rejected"; nonce: string; message: string }
   | { type: "unauthorized" };
 
 /** The runtime prefixes user messages with the date (gateway: [CURRENT DATE & TIME: ...], channels: [2026-...]); noise in a chat UI. */
