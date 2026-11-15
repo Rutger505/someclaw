@@ -92,8 +92,22 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
   }, [draft]);
 
   useLayoutEffect(() => {
-    if (stick.current && log.current) log.current.scrollTop = log.current.scrollHeight;
+    if (!log.current) return;
+    // Back from a link without the back/forward cache: reloaded, land where the page was left (scrolled up).
+    const saved = items.length ? sessionStorage.getItem(`scroll.${id}`) : null;
+    if (saved !== null) {
+      sessionStorage.removeItem(`scroll.${id}`);
+      stick.current = false;
+      log.current.scrollTop = Number(saved);
+    } else if (stick.current) log.current.scrollTop = log.current.scrollHeight;
   }, [items]);
+  useEffect(() => {
+    const hide = () => !stick.current && log.current && sessionStorage.setItem(`scroll.${id}`, String(log.current.scrollTop));
+    const show = (e: PageTransitionEvent) => e.persisted && sessionStorage.removeItem(`scroll.${id}`);
+    addEventListener("pagehide", hide);
+    addEventListener("pageshow", show);
+    return () => (removeEventListener("pagehide", hide), removeEventListener("pageshow", show));
+  }, [id]);
 
   // Search hit: scroll to that message and flash it, once its history is rendered.
   const jumped = useRef<number | null>(null);

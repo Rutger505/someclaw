@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { onAway } from "./away";
 
 /** Resolves once the new page and every bundle it references load, so a reload never lands in a restart gap. */
 async function ready() {
@@ -49,8 +50,14 @@ export function useVersionReload(idle: boolean) {
         if (es.readyState === EventSource.CLOSED) retry = setTimeout(open, 500);
       };
     };
+    // Back/forward cache (lib/away.ts): an open EventSource keeps the page out of it.
+    const off = onAway({ leave: () => (clearTimeout(retry), es.close()), back: open });
     open();
-    return () => { clearTimeout(retry); es.close(); };
+    return () => {
+      clearTimeout(retry);
+      es.close();
+      off();
+    };
   }, []);
 
   useEffect(() => {

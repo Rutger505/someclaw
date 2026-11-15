@@ -43,13 +43,6 @@ export async function pollPairing(id: string): Promise<{ status: "pending" | "ap
 }
 
 /** The WS upgrade's 401 is invisible to the browser, so check the token over REST first. */
-export async function tokenValid() {
-  if (!getToken()) return false;
-  const res = await fetch("/api/status", { headers: { authorization: `Bearer ${getToken()}` } });
-  if (res.status === 401) return false;
-  return true;
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Picked files are read one at a time: Firefox for Android fails one of several photos picked at once when they're

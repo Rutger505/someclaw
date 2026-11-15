@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientMsg, Delivered, Conversation, GatewayEvent, ServerMsg, ToolLog, HistoryMessage, TurnModel, Usage, SearchResult } from "../../shared/protocol";
 import { getToken } from "./gateway";
+import { cacheGet, cachePut } from "./cache";
+import { onAway } from "./away";
 
-export type Snapshot = { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null; skills: string[] };
+/** stale: from the page-load cache (src/lib/cache.ts), the broker's fresh one hasn't arrived yet. */
+export type Snapshot = { stale?: true } & { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null; skills: string[] };
 export type Link = "connecting" | "open" | "closed";
 export type Search = { q: string; results: SearchResult[]; error: string | null; loading: boolean };
 
@@ -132,16 +135,37 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
         }
       };
     };
+    // Back/forward cache (lib/away.ts): no socket while leaving; back: reconnect, fresh subscribe + snapshot.
+    const off = onAway({
+      leave: () => {
+        clearTimeout(retry);
+        const sock = ws.current;
+        ws.current = null;
+        if (!sock) return;
+        sock.onmessage = sock.onclose = null;
+        const closed = sock.readyState === WebSocket.CLOSED ? undefined : new Promise((r) => sock.addEventListener("close", r, { once: true }));
+        sock.close(1000, "leaving page");
+        lose("page left");
+        return closed;
+      },
+      back: () => !stopped && !ws.current && connect(),
+    });
     connect();
     return () => {
       stopped = true;
       clearTimeout(retry);
+      off();
       ws.current?.close();
     };
   }, []);
 
+  // Page-load cache: show the last list + snapshot right away, the broker's fresh ones replace them.
+  useEffect(() => {
+    cacheGet<Conversation[]>("list").then((l) => l && setList((x) => x ?? l));
+  }, []);
   useEffect(() => {
     setSnap(null);
+    cacheGet<Snapshot>(`snap:${openId}`).then((c) => c && openRef.current === openId && setSnap((x) => x ?? { ...c, stale: true }));
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: "subscribe", id: openId } satisfies ClientMsg));
   }, [openId]);
 
@@ -158,6 +182,22 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
       ws.current.send(JSON.stringify({ type: "search", q: q.trim(), seq: n } satisfies ClientMsg));
     }, 150);
   }, []);
+
+  // Written once things settle (a streaming turn changes snap per chunk), pending writes also when the page is left
+  // (before navigating: a write still running keeps the page out of the back/forward cache).
+  const dirty = useRef<{ list?: Conversation[]; snap?: Snapshot }>({});
+  const flush = useCallback(() => {
+    const { list, snap } = dirty.current;
+    dirty.current = {};
+    return Promise.all([list && cachePut("list", list), snap && cachePut(`snap:${snap.id}`, snap)]);
+  }, []);
+  useEffect(() => {
+    if (list) dirty.current.list = list;
+    if (snap && !snap.stale) dirty.current.snap = snap;
+    const t = setTimeout(flush, 1000);
+    return () => clearTimeout(t);
+  }, [list, snap]);
+  useEffect(() => onAway({ leave: flush, back: () => {} }), []);
 
   const dismissError = (at: number) => setErrors((x) => x.filter((e) => e.at !== at));
   return { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search };

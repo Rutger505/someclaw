@@ -1,6 +1,7 @@
 import { CircleAlert, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { clearToken, pair, pollPairing, requestPairing, tokenValid } from "./lib/gateway";
+import { clearToken, getToken, pair, pollPairing, requestPairing } from "./lib/gateway";
+import { cacheClear } from "./lib/cache";
 import { useVersionReload } from "./lib/useVersionReload";
 import { useBroker } from "./lib/broker";
 import { COMPOSER_KEYS, KEYMAP, useShortcuts } from "./lib/shortcuts";
@@ -11,16 +12,15 @@ import { ReloadBanner } from "./components/ReloadBanner";
 export const DASHBOARD_URL = "https://zeroclaw.homelab.rutgerpronk.com";
 
 export function App() {
-  const [auth, setAuth] = useState<"checking" | "paired" | "unpaired">("checking");
-  useEffect(() => {
-    tokenValid().then((ok) => setAuth(ok ? "paired" : "unpaired"), () => setAuth("paired"));
-  }, []);
-  if (auth === "checking") return null;
+  // No upfront token check (a round trip before anything renders): a rejected token closes the broker socket, which
+  // lands in onUnauthorized.
+  const [auth, setAuth] = useState<"paired" | "unpaired">(() => (getToken() ? "paired" : "unpaired"));
   if (auth === "unpaired") return <Pair onPaired={() => setAuth("paired")} />;
   return (
     <Shell
       onUnauthorized={() => {
         clearToken();
+        cacheClear();
         setAuth("unpaired");
       }}
     />
