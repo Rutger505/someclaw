@@ -1,11 +1,11 @@
-import { assistantParts, parseResume, toolResult, type CronRun, type ForkRef, type GatewayEvent, type LoadedSkill, type Resent, type TurnModel } from "../../shared/protocol";
+import { assistantParts, parseHandoff, parseResume, toolResult, type CronRun, type ForkRef, type GatewayEvent, type Handoff, type LoadedSkill, type Resent, type TurnModel } from "../../shared/protocol";
 import type { Snapshot } from "./broker";
 
 export type Tool = { id: string; name: string; args: unknown; output?: string };
 export type PlanEntry = { content: string; activeForm?: string; status: string };
 export type Item =
   /** at: index in the persisted history (reset to here); absent for the running turn. */
-  | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef; resent?: Resent; skills?: LoadedSkill[]; at?: number }
+  | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef; resent?: Resent; skills?: LoadedSkill[]; handoff?: Handoff; at?: number }
   /** turn: model, tokens, duration, when known (turns finished in someclaw since this was added). */
   | { kind: "agent"; text: string; live?: boolean; at?: number; turn?: TurnModel }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
@@ -27,7 +27,7 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       {
         const r = parseResume(String(e.content ?? ""));
         if (r.resume) items.push({ kind: "meta", text: RESUME_META });
-        if (r.text) items.push({ kind: "user", text: r.text, steer: !!e.steer, fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
+        if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), steer: !!e.steer, fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
       }
       break;
     case "chunk":
@@ -111,7 +111,7 @@ export function buildItems(s: Snapshot): Item[] {
     if (m.role === "user") {
       const r = parseResume(m.content);
       if (r.resume) items.push({ kind: "meta", text: RESUME_META });
-      if (r.text) items.push({ kind: "user", text: r.text, fork: m.fork, resent: m.resent, skills: m.skills, at: i });
+      if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), fork: m.fork, resent: m.resent, skills: m.skills, at: i });
     }
     else if (m.role === "assistant" && m.cron) items.push({ kind: "cron", text: m.content, cron: m.cron, at: i });
     else if (m.role === "assistant") {

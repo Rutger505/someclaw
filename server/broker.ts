@@ -28,6 +28,7 @@ import {
   forkPrompt,
   parseCron,
   parseFork,
+  parseHandoff,
   parseResent,
   parseSkills,
   resendPrompt,
@@ -101,6 +102,7 @@ let listDown = false; // last refresh failed because the gateway was down
 let listed = false; // `sessions` loaded at least once (empty before: every channel session would look writable)
 const titling = new Set<string>();
 
+const preview = (text: string) => previewText(parseHandoff(text).text).slice(0, 200);
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const send = (ws: ServerWebSocket<Client>, m: ServerMsg) => ws.send(JSON.stringify(m));
 const session = (id: string) => sessions.find((s) => s.session_id === id);
@@ -256,7 +258,7 @@ function backfillPreviews() {
       .then((h) => {
         const first = h.find((m) => m.role === "user");
         if (!first) return;
-        state.previews[id] = previewText(first.content).slice(0, 200);
+        state.previews[id] = preview(first.content);
         save();
         broadcastList();
       })
@@ -530,7 +532,7 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   c.pending = 0;
   c.attached = false;
   c.attachTries = 0;
-  if (!session(c.id)?.message_count) state.previews[c.id] ??= previewText(text).slice(0, 200);
+  if (!session(c.id)?.message_count) state.previews[c.id] ??= preview(text);
   save();
   const { prefix, sent: skills } = await withSkills(c.id);
   record(c, { type: "user", content: text, ...(fork && { fork: fork.ref }), ...(skills.length ? { skills } : {}) });
@@ -826,7 +828,7 @@ function queueMessage(id: string, text: string) {
   else {
     const at = new Date(Date.parse(reset.at) + RESUME_MARGIN_MS).toISOString();
     state.resume[id] = { at, reason: `${reset.window} usage at 100%, resets ${reset.at}: queued until then`, attempt: 0, max: MAX_RESUME_ATTEMPTS, window: reset.window, queued: [text], queuedOnly: true };
-    if (!session(id)?.message_count) state.previews[id] ??= previewText(text).slice(0, 200);
+    if (!session(id)?.message_count) state.previews[id] ??= preview(text);
     armResume(id);
   }
   save();
@@ -889,7 +891,7 @@ function schedule(id: string, text: string, window: string) {
   const list = (state.scheduled[id] ??= []);
   list.push({ text, at: new Date(at).toISOString(), window, label: w.label });
   list.sort((a, b) => a.at.localeCompare(b.at));
-  if (!session(id)?.message_count) state.previews[id] ??= previewText(text).slice(0, 200);
+  if (!session(id)?.message_count) state.previews[id] ??= preview(text);
   save();
   console.log(`broker: ${id}: message scheduled for the ${window} reset, ${list.at(-1)!.at}`);
   armScheduled(id);
@@ -1053,9 +1055,116 @@ function rotateFresh() {
   for (const ws of clients) send(ws, { type: "fresh", id: state.fresh });
 }
 
+type Fail = (message: string) => void;
+
+// No queue: a message while rocky works goes straight into the running turn (steer, the gateway folds it in).
+/** Returns what happened (handoffs report it), undefined when refused (fail) or empty. */
+async function sendText(id: string, raw: string, fail: Fail): Promise<string | undefined> {
+  const text = raw.trim();
+  if (!text) return;
+  if (id === state.fresh) rotateFresh();
+  const ro = await readOnly(id);
+  if (ro) return void fail(ro);
+  const c = conv(id);
+  // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
+  for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
+  if (c.status !== "running") {
+    if (queueMessage(id, text)) {
+      broadcastList();
+      return "queued until the rate limit resets";
+    }
+    const r = state.resume[id];
+    if (r) {
+      // Reset passed (or short limit) before the wait fired: queued messages go first, one turn each, then this.
+      // A failed turn's resume isn't sent: the new message continues it.
+      (r.queued ??= []).push(text);
+      r.queuedOnly = true;
+      await resumeNow(id);
+      return "queued behind the rate-limited messages, sending now";
+    }
+    await startTurn(c, text);
+    return "started a turn";
+  }
+  if (c.recovering) return void fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
+  if (c.attached || c.replay) return void fail("reattached turn is read-only (ZeroClaw takes steering and answers only from the socket that started it): wait for it, or stop it");
+  // rocky is blocked on ask_user: a steer would only land after it times out
+  const q = openQuestion(c);
+  if (q) {
+    try {
+      await answer(c, q, text);
+      return "answered rocky's question";
+    } catch (e) {
+      return void fail(`answer: ${msg(e)}`);
+    }
+  }
+  try {
+    const up = await upstream(c);
+    record(c, { type: "user", content: text, steer: true });
+    keepStep(c, { type: "user", content: text, steer: true });
+    up.send(JSON.stringify({ type: "message", content: text }));
+  } catch (e) {
+    return void fail(`steer: ${msg(e)}`);
+  }
+  broadcastList();
+  return "steered into the running turn";
+}
+
+// After the running turn, as its own turn (outbox): a steer would run in the same turn, whose tool context keeps growing.
+async function enqueue(id: string, raw: string, fail: Fail): Promise<string | undefined> {
+  const text = raw.trim();
+  if (!text) return;
+  if (id === state.fresh) rotateFresh();
+  const ro = await readOnly(id);
+  if (ro) return void fail(ro);
+  const c = conv(id);
+  if (c.status !== "running" && !c.finishing && !runningElsewhere.has(id)) return sendText(id, text, fail);
+  (state.outbox[id] ??= { items: [], held: null }).items.push(text);
+  save();
+  console.log(`broker: ${id}: message queued after the running turn (${state.outbox[id]!.items.length} in outbox)`);
+  broadcastList();
+  kick(id); // running/finishing: finish() kicks; elsewhere: looks again in 30 s
+  return "queued after rocky's running turn (outbox)";
+}
+
+async function fork(from: string, id: string, raw: string, fail: Fail): Promise<string | undefined> {
+  const text = raw.trim();
+  if (!text) return;
+  const src = session(from);
+  if (!src?.channel_id) return void fail(`fork: ${from} is not a channel conversation`);
+  if (session(id) || convs.get(id)?.status === "running") return void fail(`fork: conversation ${id} already exists`);
+  const context = transcript(await history(from));
+  await startTurn(conv(id), text, { ref: { id: from, channel: src.channel_id, messages: context.messages }, context: context.text });
+  return `forked ${src.channel_id} conversation ${from} into a new conversation`;
+}
+
+/** POST /someclaw/send (dev-env bin/someclaw-thread send: Claude Code handoffs). Same paths as the composer's enqueue:
+ * idle starts a turn, running goes to the outbox. Channel sessions fork into a new conversation; to null: new one. */
+export async function post(to: string | null, text: string): Promise<{ id: string; action: string } | { error: string; status: number }> {
+  if (!text.trim()) return { error: "empty message", status: 400 };
+  let error: string | null = null;
+  const fail = (m: string) => void (error ??= m);
+  if (!listed) await refresh();
+  if (!listed) return { error: `session list not loaded (${listError})`, status: 503 };
+  let id: string;
+  let action: string | undefined;
+  if (to === null) {
+    id = crypto.randomUUID();
+    action = await enqueue(id, text, fail);
+  } else if (session(to)?.channel_id) {
+    id = crypto.randomUUID();
+    action = await fork(to, id, text, fail);
+  } else if (session(to) || convs.has(to)) {
+    id = to;
+    action = await enqueue(id, text, fail);
+  } else return { error: `no conversation ${to}`, status: 404 };
+  if (error || !action) return { error: error ?? "not sent", status: 409 };
+  console.log(`broker: handoff into ${id}: ${action}`);
+  return { id, action };
+}
+
 /** fail: refuse `m` (message with a nonce: rejected, the browser gives its text back; else a plain error). */
 async function handle(ws: ServerWebSocket<Client>, m: ClientMsg, fail: (message: string) => void = (message) => send(ws, { type: "error", message })) {
-  if ((m.type === "send" || m.type === "enqueue" || m.type === "schedule") && m.id === state.fresh && m.text.trim()) rotateFresh();
+  if (m.type === "schedule" && m.id === state.fresh && m.text.trim()) rotateFresh();
   switch (m.type) {
     case "ping":
       return; // acked in message()
@@ -1077,63 +1186,10 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg, fail: (message:
       return send(ws, await snapshot(m.id));
 
     // No queue: a message while rocky works goes straight into the running turn (steer, the gateway folds it in).
-    case "send": {
-      const text = m.text.trim();
-      if (!text) return;
-      const ro = await readOnly(m.id);
-      if (ro) return fail(ro);
-      const c = conv(m.id);
-      // Turn just ended (loading history): injecting now would land after `done`. Wait it out, then start a turn.
-      for (let i = 0; c.finishing && i < 100; i++) await Bun.sleep(100);
-      if (c.status !== "running") {
-        if (queueMessage(m.id, text)) return broadcastList();
-        const r = state.resume[m.id];
-        if (r) {
-          // Reset passed (or short limit) before the wait fired: queued messages go first, one turn each, then this.
-          // A failed turn's resume isn't sent: the new message continues it.
-          (r.queued ??= []).push(text);
-          r.queuedOnly = true;
-          return resumeNow(m.id);
-        }
-        return startTurn(c, text);
-      }
-      if (c.recovering) return fail("turn lost its gateway socket and is being recovered: wait for it, or stop it");
-      if (c.attached || c.replay) return fail("reattached turn is read-only (ZeroClaw takes steering and answers only from the socket that started it): wait for it, or stop it");
-      // rocky is blocked on ask_user: a steer would only land after it times out
-      const q = openQuestion(c);
-      if (q) {
-        try {
-          await answer(c, q, text);
-        } catch (e) {
-          fail(`answer: ${msg(e)}`);
-        }
-        return;
-      }
-      try {
-        const up = await upstream(c);
-        record(c, { type: "user", content: text, steer: true });
-        keepStep(c, { type: "user", content: text, steer: true });
-        up.send(JSON.stringify({ type: "message", content: text }));
-      } catch (e) {
-        fail(`steer: ${msg(e)}`);
-      }
-      return broadcastList();
-    }
-
-    // After the running turn, as its own turn (outbox): a steer would run in the same turn, whose tool context keeps growing.
-    case "enqueue": {
-      const text = m.text.trim();
-      if (!text) return;
-      const ro = await readOnly(m.id);
-      if (ro) return fail(ro);
-      const c = conv(m.id);
-      if (c.status !== "running" && !c.finishing && !runningElsewhere.has(m.id)) return handle(ws, { type: "send", id: m.id, text }, fail);
-      (state.outbox[m.id] ??= { items: [], held: null }).items.push(text);
-      save();
-      console.log(`broker: ${m.id}: message queued after the running turn (${state.outbox[m.id]!.items.length} in outbox)`);
-      broadcastList();
-      return kick(m.id); // running/finishing: finish() kicks; elsewhere: looks again in 30 s
-    }
+    case "send":
+      return void (await sendText(m.id, m.text, fail));
+    case "enqueue":
+      return void (await enqueue(m.id, m.text, fail));
 
     case "answer": {
       const c = convs.get(m.id);
@@ -1149,15 +1205,8 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg, fail: (message:
       return;
     }
 
-    case "fork": {
-      const text = m.text.trim();
-      if (!text) return;
-      const src = session(m.from);
-      if (!src?.channel_id) return fail(`fork: ${m.from} is not a channel conversation`);
-      if (session(m.id) || convs.get(m.id)?.status === "running") return fail(`fork: conversation ${m.id} already exists`);
-      const context = transcript(await history(m.from));
-      return startTurn(conv(m.id), text, { ref: { id: m.from, channel: src.channel_id, messages: context.messages }, context: context.text });
-    }
+    case "fork":
+      return void (await fork(m.from, m.id, m.text, fail));
 
     case "flush": {
       if (state.resume[m.id]) {

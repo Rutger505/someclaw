@@ -1,7 +1,7 @@
 // Serves the built UI (dist/), runs the conversation broker on /someclaw/ws (server/broker.ts) and proxies the gateway's
 // REST API on the same origin (the gateway has no CORS; the UI uses it for pairing).
 import { readdirSync, watch } from "node:fs";
-import { authorize, websocket, type Client } from "./server/broker";
+import { authorize, post, websocket, type Client } from "./server/broker";
 import { tokenValid } from "./server/gateway";
 import { download, upload } from "./server/uploads";
 import { flush } from "./server/state";
@@ -72,6 +72,17 @@ Bun.serve<Client, never>({
       const res = await fetch(`${GATEWAY}/admin/reload`, { method: "POST", signal: AbortSignal.timeout(30_000) });
       console.log(`reload: gateway answered ${res.status}`);
       return new Response(await res.text(), { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "text/plain" } });
+    }
+
+    // Handoffs from Claude Code (dev-env bin/someclaw-thread send), with that machine's own pairing token (kept like a browser's).
+    if (url.pathname === "/someclaw/send" && req.method === "POST") {
+      const token = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+      if (!(await authorize(token))) return new Response("unauthorized: pair again", { status: 401 });
+      const body = (await req.json().catch(() => null)) as { to?: unknown; text?: unknown } | null;
+      if (typeof body?.text !== "string" || (body.to !== null && typeof body.to !== "string"))
+        return Response.json({ error: 'expected {"to": "<id>" | null, "text": "..."}' }, { status: 400 });
+      const r = await post(body.to, body.text);
+      return "error" in r ? Response.json({ error: r.error }, { status: r.status }) : Response.json(r);
     }
 
     if (url.pathname === "/someclaw/upload" && req.method === "POST") return upload(req);

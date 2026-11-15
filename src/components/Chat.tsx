@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, GitBranch, ImagePlus, ListPlus, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, X } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, CircleHelp, Clock, Copy, ListOrdered, Pencil, Send, Upload, CornerDownRight, GitBranch, ImagePlus, ListPlus, Lock, PanelLeft, Paperclip, Pin, RotateCcw, Square, Terminal, X } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Outbox, Resume, Scheduled, TurnModel, Usage } from "../../shared/protocol";
@@ -600,6 +600,11 @@ function RowBody({ item, reset, onAnswer }: RowProps) {
             <a href={`#${encodeURIComponent(item.fork.id)}`} className="flex items-center gap-1 text-xs text-accent hover:underline">
               <GitBranch size={12} /> continued from {item.fork.channel} · {item.fork.messages} messages as context
             </a>
+          )}
+          {item.handoff && (
+            <span className="flex items-center gap-1 text-xs text-accent" title={`<handoff from="${item.handoff.from}" host="${item.handoff.host}">`}>
+              <Terminal size={12} /> from {item.handoff.from === "claude-code" ? "Claude Code" : item.handoff.from} @ {item.handoff.host}
+            </span>
           )}
           {item.skills && item.skills.length > 0 && (
             <span className="flex items-center gap-1 text-xs text-muted" title={item.skills.map((s) => `${s.name} (${s.hash})`).join(", ")}>

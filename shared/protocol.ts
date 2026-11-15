@@ -345,3 +345,17 @@ export function parseSkills(content: string): { text: string; skills?: LoadedSki
   }
   return skills.length ? { text, skills } : { text };
 }
+
+// ---------- handoffs ----------
+// Work handed over from Claude Code on one of Rutger's paired machines (bin/someclaw-thread send in dev-env). The model
+// reads the block (rocky's AGENTS.md says how to treat it); the UI shows its text with a "from Claude Code @ host" chip.
+
+export type Handoff = { from: string; host: string };
+
+const HANDOFF_RE = /^<handoff from="([^"]*)" host="([^"]*)">\n?([\s\S]*?)\n?<\/handoff>\s*$/;
+
+export function parseHandoff(content: string): { text: string; handoff?: Handoff } {
+  const m = HANDOFF_RE.exec(content);
+  if (!m) return { text: content };
+  return { text: m[3]!, handoff: { from: m[1]!, host: m[2]! } };
+}
