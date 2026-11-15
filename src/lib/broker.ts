@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMsg, Conversation, GatewayEvent, ServerMsg, ToolLog, HistoryMessage, TurnModel, Usage, SearchResult } from "../../shared/protocol";
+import type { ClientMsg, Delivered, Conversation, GatewayEvent, ServerMsg, ToolLog, HistoryMessage, TurnModel, Usage, SearchResult } from "../../shared/protocol";
 import { getToken } from "./gateway";
 
 export type Snapshot = { id: string; history: HistoryMessage[]; tools: ToolLog[]; turns: TurnModel[]; turn: GatewayEvent[]; historyError: string | null; model: string | null; skills: string[] };
 export type Link = "connecting" | "open" | "closed";
 export type Search = { q: string; results: SearchResult[]; error: string | null; loading: boolean };
+
+const ACK_MS = 8000;
 
 /** One /someclaw/ws socket to the broker: conversation list for the sidebar + the open conversation. */
 export function useBroker(openId: string, onUnauthorized: () => void) {
@@ -25,6 +27,32 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
     ws.current.send(JSON.stringify(m));
   }, []);
 
+  // Composer messages until the broker acks them. A phone that slept or switched networks can keep a dead socket
+  // that still reads OPEN: no ack in ACK_MS closes it, which rejects everything unacked (and reconnects).
+  const kill = useRef<(sock: WebSocket) => void>(() => {});
+  const unacked = useRef(new Map<string, { resolve: () => void; reject: (e: Error) => void }>());
+  const lose = (why: string) => {
+    for (const p of unacked.current.values()) p.reject(new Error(why));
+    unacked.current.clear();
+  };
+  /** Sends a composer message; resolves once the broker has it, rejects (error shown) when it may not have. */
+  const deliver = useCallback((m: ClientMsg & Delivered): Promise<void> => {
+    const sock = ws.current;
+    const fail = (why: string) => {
+      setErrors((e) => [...e, { at: Date.now(), message: `${m.type} not sent (${why}): put back in the composer` }]);
+      return Promise.reject(new Error(why));
+    };
+    if (sock?.readyState !== WebSocket.OPEN) return fail("not connected");
+    const nonce = crypto.randomUUID();
+    const acked = new Promise<void>((resolve, reject) => unacked.current.set(nonce, { resolve, reject }));
+    const timer = setTimeout(() => unacked.current.has(nonce) && kill.current(sock), ACK_MS);
+    sock.send(JSON.stringify({ ...m, nonce }));
+    return acked.then(
+      () => clearTimeout(timer),
+      (e: Error) => (clearTimeout(timer), fail(e.message)),
+    );
+  }, []);
+
   useEffect(() => {
     let stopped = false;
     let retry: Timer | undefined;
@@ -42,14 +70,24 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
         setErrors((x) => x.filter((e) => !e.link));
         sock.send(JSON.stringify({ type: "subscribe", id: openRef.current } satisfies ClientMsg));
       };
-      sock.onclose = async (e) => {
-        if (stopped) return;
+      sock.onclose = (e) => closed(e.code, e.reason);
+      // Silent socket: a dead one's close handshake can hang for minutes, so drop it now and reconnect. Its late
+      // messages (an ack included) are ignored: what was rejected stays rejected.
+      kill.current = (s) => {
+        if (s !== sock) return;
+        sock.onmessage = sock.onclose = null;
+        sock.close(4000, "no ack");
+        closed(4000, "no ack");
+      };
+      const closed = async (code: number, reason: string) => {
+        if (stopped || ws.current !== sock) return;
+        lose(code === 4000 ? `no reply in ${ACK_MS / 1000} s` : `socket closed ${code}`);
         setLink("closed");
         // The upgrade's 401 is invisible here: ask over REST.
         const auth = await fetch("/api/status", { headers: { authorization: `Bearer ${getToken()}` } }).catch(() => null);
-        if (auth?.status === 401 || e.code === 4001) return onUnauthorized();
+        if (auth?.status === 401 || code === 4001) return onUnauthorized();
         // One link error per outage, not one per fast retry.
-        setErrors((x) => [...x.filter((y) => !y.link), { at: Date.now(), message: `broker socket closed ${e.code} ${e.reason}, reconnecting`, link: true }]);
+        setErrors((x) => [...x.filter((y) => !y.link), { at: Date.now(), message: `broker socket closed ${code} ${reason}, reconnecting`, link: true }]);
         retry = setTimeout(connect, attempt++ < 40 ? 250 : 2000);
       };
       sock.onmessage = (e) => {
@@ -79,6 +117,10 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
             break;
           case "search":
             if (m.seq === seq.current) setFound({ q: m.q, results: m.results, error: m.error, loading: false });
+            break;
+          case "ack":
+            unacked.current.get(m.nonce)?.resolve();
+            unacked.current.delete(m.nonce);
             break;
           case "error":
             setErrors((x) => [...x, { at: Date.now(), message: m.message }]);
@@ -118,5 +160,5 @@ export function useBroker(openId: string, onUnauthorized: () => void) {
   }, []);
 
   const dismissError = (at: number) => setErrors((x) => x.filter((e) => e.at !== at));
-  return { list, listError, snap, link, errors, dismissError, send, usage, found, search };
+  return { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search };
 }

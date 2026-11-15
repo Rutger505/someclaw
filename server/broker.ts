@@ -1305,6 +1305,7 @@ export const websocket: WebSocketHandler<Client> = {
       send(ws, { type: "error", message: `bad message: ${String(raw).slice(0, 100)}` });
       return;
     }
+    if ("nonce" in m && m.nonce) send(ws, { type: "ack", nonce: m.nonce });
     handle(ws, m).catch((e) => send(ws, { type: "error", message: `${m.type}: ${msg(e)}` }));
   },
   close(ws: ServerWebSocket<Client>) {

@@ -22,6 +22,8 @@ type Props = {
   conv: Conversation | undefined;
   snap: Snapshot | null;
   send: (m: ClientMsg) => void;
+  /** Composer messages: rejects when the broker may not have it (the composer gets it back). */
+  deliver: (m: ClientMsg) => Promise<void>;
   onDraft: (empty: boolean) => void;
   onToggleSidebar: () => void;
   /** Opens another conversation (a fork right after sending it). */
@@ -39,7 +41,7 @@ const COLUMN = "mx-auto w-full max-w-3xl px-6";
 /** A composer attachment: uploads as soon as it's added, sent as a media marker once done. */
 type Pending = { key: string; name: string; image: boolean; local: File; file?: Attachment; error?: string };
 
-export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, onDraft, onToggleSidebar, onOpen, usage, jump, onDropped }, ref) {
+export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap, send, deliver, onDraft, onToggleSidebar, onOpen, usage, jump, onDropped }, ref) {
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -195,16 +197,30 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
    * goes out after this turn as its own turn. window: at that usage window's next reset. Channel sessions: forks. */
   const submit = (opt: { window?: string; after?: boolean } = {}) => {
     if (!canSend) return;
-    const text = withAttachments(draft.trim(), files.map((f) => f.file!));
+    const kept = { id, draft: draft.trim(), files };
+    const text = withAttachments(kept.draft, files.map((f) => f.file!));
     setScheduling(false);
     setDraft("");
     setFiles([]);
-    if (opt.window) return send({ type: "schedule", id, text, window: opt.window });
+    if (opt.window) return void deliver({ type: "schedule", id, text, window: opt.window }).catch(() => giveBack(kept));
     stick.current = true;
-    if (!readOnly) return send({ type: opt.after && running ? "enqueue" : "send", id, text });
+    if (!readOnly) return void deliver({ type: opt.after && running ? "enqueue" : "send", id, text }).catch(() => giveBack(kept));
     const fork = crypto.randomUUID();
-    send({ type: "fork", from: id, id: fork, text });
+    deliver({ type: "fork", from: id, id: fork, text }).catch(() => (onOpen(kept.id), giveBack(kept)));
     onOpen(fork);
+  };
+  /** Not sent (socket down or silent): back into its composer, before whatever was typed since. */
+  const idRef = useRef(id);
+  idRef.current = id;
+  const giveBack = (kept: { id: string; draft: string; files: Pending[] }) => {
+    if (idRef.current === kept.id) {
+      restore([kept.draft]);
+      return setFiles((fs) => [...kept.files, ...fs]);
+    }
+    // Switched conversations meanwhile: its saved draft gets the text (and the attachments as markers).
+    const key = `draft.${kept.id}`;
+    const text = withAttachments(kept.draft, kept.files.map((f) => f.file!));
+    localStorage.setItem(key, [text, localStorage.getItem(key) ?? ""].filter((x) => x.trim()).join("\n\n"));
   };
 
   return (

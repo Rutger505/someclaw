@@ -33,7 +33,7 @@ const newId = () => crypto.randomUUID();
 
 function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [openId, setOpenId] = useState(() => hashId() || newId());
-  const { list, listError, snap, link, errors, dismissError, send, usage, found, search } = useBroker(openId, onUnauthorized);
+  const { list, listError, snap, link, errors, dismissError, send, deliver, usage, found, search } = useBroker(openId, onUnauthorized);
   /** Search hit to scroll to once that conversation's history is in; n: a repeat click scrolls again. */
   const [jump, setJump] = useState<{ id: string; at: number; n: number } | null>(null);
   const side = useRef<SidebarHandle>(null);
@@ -147,6 +147,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
           conv={conv}
           snap={snap}
           send={send}
+          deliver={deliver}
           usage={usage}
           jump={jump?.id === openId ? jump : null}
           onDraft={setDraftEmpty}

@@ -114,22 +114,26 @@ export type TurnModel = { at: number; provider: string; model: string; input?: n
 /** A configured provider profile (providers.models.<family>.<alias>). ref = "<family>.<alias>". */
 export type ModelOption = { ref: string; family: string; alias: string; model: string };
 
+/** Composer messages carry a nonce: the broker acks it on receipt, the browser puts the text back in the composer when
+ * the socket drops (or stays silent) before the ack. */
+export type Delivered = { nonce?: string };
+
 export type ClientMsg =
   | { type: "subscribe"; id: string | null }
   /** Idle: starts a turn. Running: steers, i.e. goes into the running turn right away (the gateway folds it in);
    * answers rocky's open ask_user question instead when there is one. */
-  | { type: "send"; id: string; text: string }
+  | ({ type: "send"; id: string; text: string } & Delivered)
   /** Running: goes out after this turn, as its own turn (outbox). Idle: same as send. */
-  | { type: "enqueue"; id: string; text: string }
+  | ({ type: "enqueue"; id: string; text: string } & Delivered)
   /** Answer the running turn's ask_user question (gateway ask_user frame, zeroclaw-patches 0003). */
   | { type: "answer"; id: string; request_id: string; answer: string }
   /** Continue read-only channel session `from` in new conversation `id`: `text` plus that thread as context. */
-  | { type: "fork"; from: string; id: string; text: string }
+  | ({ type: "fork"; from: string; id: string; text: string } & Delivered)
   /** Waiting (rate-limited): resume / send the queued messages now instead of at the reset. Outbox held after a
    * failed turn: send its next message. */
   | { type: "flush"; id: string }
   /** Send `text` at the next reset of usage window `window` (five_hour, seven_day), even with usage left. */
-  | { type: "schedule"; id: string; text: string; window: string }
+  | ({ type: "schedule"; id: string; text: string; window: string } & Delivered)
   /** Drop held-back message `index` (the UI puts it back in the composer). */
   | { type: "unqueue"; id: string; list: "queued" | "outbox" | "scheduled"; index: number }
   /** Full-text search in user messages and rocky's replies (not tool calls). seq: echoed back, newest wins. */
@@ -157,6 +161,8 @@ export type ServerMsg =
   | { type: "usage"; usage: Usage }
   | { type: "search"; seq: number; q: string; results: SearchResult[]; error: string | null }
   | { type: "error"; message: string }
+  /** Received the client message with this nonce (processing errors still come as `error`). */
+  | { type: "ack"; nonce: string }
   | { type: "unauthorized" };
 
 /** The runtime prefixes user messages with the date (gateway: [CURRENT DATE & TIME: ...], channels: [2026-...]); noise in a chat UI. */
