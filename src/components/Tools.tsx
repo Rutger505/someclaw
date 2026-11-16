@@ -16,14 +16,19 @@ const brief = (args: unknown) => {
 
 /**
  * A run of tool calls. Collapsed: a 3-row window that slides up as calls arrive (no manual scroll),
- * latest at the bottom. Clicking a row expands the group with that call opened; the header toggles
+ * latest at the bottom; a subagent's steps are rows too, indented under its spawn call. Clicking a row expands the group with that call opened; the header toggles
  * the group. Expanded: every call, each opening to args + output.
  */
 export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState<number | null>(null);
   const running = tools.filter((t) => t.output === undefined).length;
-  const hidden = Math.max(0, tools.length - VISIBLE);
+  // Collapsed rows: each call, then its subagent's steps (clicking one opens its spawn call).
+  const rows = tools.flatMap((t, i) => [
+    { t, i, sub: false, live },
+    ...(t.sub?.steps ?? []).map((step) => ({ t: step, i, sub: true, live: live && !t.sub?.ended })),
+  ]);
+  const hidden = Math.max(0, rows.length - VISIBLE);
 
   return (
     <div>
@@ -53,7 +58,7 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
         </div>
       ) : (
         <div
-          style={{ height: Math.min(tools.length, VISIBLE) * ROW }}
+          style={{ height: Math.min(rows.length, VISIBLE) * ROW }}
           className={`overflow-hidden font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
             hidden ? "mask-t-from-60%" : ""
           }`}
@@ -62,11 +67,12 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
             style={{ transform: `translateY(-${hidden * ROW}px)` }}
             className="transition-transform duration-300 ease-out motion-reduce:transition-none"
           >
-            {tools.map((t, i) => (
+            {rows.map(({ t, i, sub, live }, row) => (
               <ToolLine
-                key={t.id || i}
+                key={`${t.id || i}-${row}`}
                 t={t}
                 live={live}
+                sub={sub}
                 onClick={() => {
                   setFocus(i);
                   setOpen(true);
@@ -86,13 +92,14 @@ function Status({ t, live }: { t: Tool; live: boolean }) {
   return <span className="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-warn border-t-transparent" />;
 }
 
-function ToolLine({ t, live, onClick }: { t: Tool; live: boolean; onClick: () => void }) {
+function ToolLine({ t, live, sub, onClick }: { t: Tool; live: boolean; sub: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       title="Open this call"
-      className="-mx-2 flex h-6 w-[calc(100%+1rem)] cursor-pointer items-center gap-2 rounded-md px-2 text-left text-fg-2 transition-opacity duration-300 hover:bg-elevated hover:text-fg starting:opacity-0"
+      className={`-mx-2 flex h-6 w-[calc(100%+1rem)] cursor-pointer ${sub ? "pl-7" : ""} items-center gap-2 rounded-md px-2 text-left text-fg-2 transition-opacity duration-300 hover:bg-elevated hover:text-fg starting:opacity-0`}
     >
+      {sub && <Bot size={12} className="shrink-0 text-muted" />}
       <Status t={t} live={live} />
       <span className="shrink-0 text-accent-light">{t.name}</span>
       {t.sub && <span className="shrink-0 text-muted">{steps(t.sub)}</span>}
@@ -126,10 +133,10 @@ function ToolDetails({ t, live, focused }: { t: Tool; live: boolean; focused: bo
 
 const steps = (sub: Subagent) => `${sub.steps.length} step${sub.steps.length === 1 ? "" : "s"}`;
 
-/** What a spawn_subagent call's subagent did, nested under it; collapsed until clicked. Its own running state: until
+/** What a spawn_subagent call's subagent did, nested under it; open until clicked. Its own running state: until
  * subagent_end, while the turn is live. */
 function SubagentSteps({ sub, live }: { sub: Subagent; live: boolean }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const running = live && !sub.ended;
   return (
     <div className="mb-1 ml-5 border-l border-line pl-3">
