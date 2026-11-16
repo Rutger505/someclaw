@@ -436,7 +436,11 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
               className="max-h-64 min-h-12 overflow-y-auto px-4 pt-3.5 pb-1"
             />
             <div className="flex items-center gap-2 px-3 pb-2.5">
-              <span className="text-xs text-faint">
+              {/* Phones: short status only; the keyboard hints squeezed into a narrow multi-line column next to the buttons. */}
+              <span className="min-w-0 truncate text-xs text-faint sm:hidden">
+                {readOnly ? "Continues in a new conversation" : running ? "rocky is working" : queues ? `${full!.label} limit full · queues until ${when(full!.at)}` : ""}
+              </span>
+              <span className="hidden text-xs text-faint sm:inline">
                 {readOnly
                   ? "Enter continues in a new conversation with this thread as context · Esc locks again"
                   : running
@@ -445,7 +449,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
                       ? `${full!.label} limit full · Enter queues until ${when(full!.at)} (${until(full!.at)})`
                       : "Enter to send · Shift+Enter new line"}
               </span>
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
                 <input
                   ref={picker}
                   type="file"
