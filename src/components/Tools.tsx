@@ -71,14 +71,15 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
             const plan = subPlan(t.sub);
             if (!run && !plan) return null;
             return (
-              <div key={`sub-${t.id || i}`} className="ml-5 border-l border-line pl-3">
+              <div key={`sub-${t.id || i}`} className="mt-4 ml-5 border-l-2 border-line pl-3">
                 <button
                   onClick={() => openAt(i)}
                   title="Open this call"
-                  className="flex h-6 w-full items-center gap-2 text-left text-xs text-muted transition-colors hover:text-fg-2"
+                  className="flex h-8 w-full items-center gap-2 text-left text-sm text-fg-2 transition-colors hover:text-fg"
                 >
-                  <Bot size={12} className="shrink-0" />
-                  <span className="shrink-0">{steps(t.sub)}</span>
+                  <Bot size={15} className="shrink-0 text-accent-light" />
+                  <span className="shrink-0 font-medium">Subagent</span>
+                  <span className="shrink-0 text-muted">{steps(t.sub)}</span>
                   <span className="truncate text-faint">{brief(t.args)}</span>
                 </button>
                 {plan && <Plan entries={plan} live={run} />}
@@ -181,11 +182,12 @@ function SubagentSteps({ sub, live }: { sub: Subagent; live: boolean }) {
   const running = live && !sub.ended;
   const plan = subPlan(sub);
   return (
-    <div className="mb-1 ml-5 border-l border-line pl-3">
-      <button onClick={() => setOpen((x) => !x)} className="flex h-6 items-center gap-2 text-left text-muted transition-colors hover:text-fg-2">
-        <Bot size={12} />
-        <span>subagent: {steps(sub)}</span>
-        <ChevronDown size={12} className={`transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
+    <div className="mt-1 mb-4 ml-5 border-l-2 border-line pl-3">
+      <button onClick={() => setOpen((x) => !x)} className="flex h-8 items-center gap-2 text-left font-sans text-sm text-fg-2 transition-colors hover:text-fg">
+        <Bot size={15} className="text-accent-light" />
+        <span className="font-medium">Subagent</span>
+        <span className="text-muted">{steps(sub)}</span>
+        <ChevronDown size={14} className={`transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
         {running && <span className="text-warn">· running</span>}
         {!live && !sub.ended && <span className="text-err">· no subagent_end</span>}
         {sub.ended && !sub.success && <span className="text-err">· failed</span>}
