@@ -17,7 +17,8 @@ const brief = (args: unknown) => {
 /**
  * A run of tool calls. Collapsed: a 3-row window that slides up as calls arrive (no manual scroll),
  * latest at the bottom; a finished subagent's steps are rows too, indented under its spawn call. Each running subagent
- * gets its own window below (its prompt, then its latest steps), so parallel subagents all stay visible. Clicking a row
+ * gets its own window below (its prompt, plan, then its latest steps), so parallel subagents all stay visible; a finished
+ * one with a plan keeps a window with just its plan. Clicking a row
  * expands the group with that call opened; the header toggles the group. Expanded: every call, each opening to args + output.
  */
 export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
@@ -64,35 +65,29 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
       ) : (
         <>
           <Ticker rows={rows} onOpen={openAt} />
-          {tools.map(
-            (t, i) =>
-              isRunning(t) && (
-                <div key={`sub-${t.id || i}`} className="ml-5 border-l border-line pl-3">
-                  <button
-                    onClick={() => openAt(i)}
-                    title="Open this call"
-                    className="flex h-6 w-full items-center gap-2 text-left text-xs text-muted transition-colors hover:text-fg-2"
-                  >
-                    <Bot size={12} className="shrink-0" />
-                    <span className="shrink-0">{steps(t.sub!)}</span>
-                    <span className="truncate text-faint">{brief(t.args)}</span>
-                  </button>
-                  <Ticker rows={t.sub!.steps.map((step) => ({ t: step, i, sub: false, live: true }))} onOpen={openAt} />
-                </div>
-              ),
-          )}
+          {tools.map((t, i) => {
+            if (!t.sub) return null;
+            const run = isRunning(t);
+            const plan = subPlan(t.sub);
+            if (!run && !plan) return null;
+            return (
+              <div key={`sub-${t.id || i}`} className="ml-5 border-l border-line pl-3">
+                <button
+                  onClick={() => openAt(i)}
+                  title="Open this call"
+                  className="flex h-6 w-full items-center gap-2 text-left text-xs text-muted transition-colors hover:text-fg-2"
+                >
+                  <Bot size={12} className="shrink-0" />
+                  <span className="shrink-0">{steps(t.sub)}</span>
+                  <span className="truncate text-faint">{brief(t.args)}</span>
+                </button>
+                {plan && <Plan entries={plan} live={run} />}
+                {run && <Ticker rows={t.sub.steps.map((step) => ({ t: step, i, sub: false, live: true }))} onOpen={openAt} />}
+              </div>
+            );
+          })}
         </>
       )}
-      {tools.map((t, i) => {
-        const plan = t.sub && subPlan(t.sub);
-        return (
-          plan && (
-            <div key={`plan-${t.id || i}`} className="ml-5 border-l border-line pl-3">
-              <Plan entries={plan} live={live && !t.sub!.ended} />
-            </div>
-          )
-        );
-      })}
     </div>
   );
 }
@@ -184,6 +179,7 @@ const steps = (sub: Subagent) => `${sub.steps.length} step${sub.steps.length ===
 function SubagentSteps({ sub, live }: { sub: Subagent; live: boolean }) {
   const [open, setOpen] = useState(true);
   const running = live && !sub.ended;
+  const plan = subPlan(sub);
   return (
     <div className="mb-1 ml-5 border-l border-line pl-3">
       <button onClick={() => setOpen((x) => !x)} className="flex h-6 items-center gap-2 text-left text-muted transition-colors hover:text-fg-2">
@@ -197,6 +193,7 @@ function SubagentSteps({ sub, live }: { sub: Subagent; live: boolean }) {
       {sub.ended && !sub.success && <div className="whitespace-pre-wrap break-words text-err">{sub.error || "subagent_end: success=false, no error"}</div>}
       {open && (
         <>
+          {plan && <Plan entries={plan} live={running} />}
           {sub.steps.map((t, i) => (
             <ToolDetails key={t.id || i} t={t} live={running} focused={false} />
           ))}
