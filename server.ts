@@ -6,7 +6,6 @@ import { tokenValid } from "./server/gateway";
 import { download, upload } from "./server/uploads";
 import { flush } from "./server/state";
 import * as pairing from "./server/pairing";
-import { recheck, upstream } from "./server/upstream";
 
 const GATEWAY = (process.env.ZEROCLAW_GATEWAY ?? "http://127.0.0.1:42617").replace(/\/+$/, "");
 const PORT = Number(process.env.PORT ?? 42618);
@@ -28,7 +27,6 @@ watch(import.meta.dir, (_, file) => {
   clearTimeout(debounce);
   debounce = setTimeout(async () => {
     const v = await hashIndex().catch(() => version);
-    recheck(); // new build: commit.txt changed
     if (v === version) return;
     version = v;
     for (const c of listeners) send(c, `data: ${v}\n\n`);
@@ -107,10 +105,6 @@ Bun.serve<Client, never>({
 
     if (url.pathname === "/someclaw/version") {
       return new Response(version, { headers: { "cache-control": "no-store" } });
-    }
-
-    if (url.pathname === "/someclaw/upstream") {
-      return Response.json(upstream(), { headers: { "cache-control": "no-store" } });
     }
 
     if (url.pathname === "/someclaw/events") {

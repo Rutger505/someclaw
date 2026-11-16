@@ -26,20 +26,6 @@ export type Resume = {
   queuedOnly?: true;
 };
 
-/** GET /someclaw/upstream: commit the served dist/ was built from vs origin/main (server/upstream.ts). */
-export type Upstream = {
-  built: string | null;
-  main: string | null;
-  /** Build doesn't contain main, for longer than the update timer needs. */
-  behind: boolean;
-  /** Commits behind; null when unknown (main not fetched in this checkout). */
-  commits: number | null;
-  /** ms epoch since this main has been missing from the build. */
-  since: number | null;
-  /** Last check failed (ls-remote, missing dist/commit.txt): values above are from the last good check. */
-  error: string | null;
-};
-
 /** Message the broker sends itself at `at` (reset of usage window `window` + margin), via the outbox. */
 export type Scheduled = { text: string; at: string; window: string; label: string };
 

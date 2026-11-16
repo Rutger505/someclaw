@@ -26,10 +26,6 @@ async function build() {
   const html = `${root}/dist.tmp/index.html`;
   const links = '<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/apple-touch-icon.png">';
   writeFileSync(html, readFileSync(html, "utf8").replace("</head>", `${links}</head>`));
-  // Commit this build is from: server/upstream.ts compares it with origin/main (update stuck → banner).
-  const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root });
-  if (head.exitCode === 0) writeFileSync(`${root}/dist.tmp/commit.txt`, head.stdout.toString().trim());
-  else console.error(`git rev-parse HEAD failed: ${head.stderr}`);
   // swap in one rename so the server never serves a half-written dist/
   rmSync(`${root}/dist`, { recursive: true, force: true });
   (await import("node:fs")).renameSync(`${root}/dist.tmp`, `${root}/dist`);
