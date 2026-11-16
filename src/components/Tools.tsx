@@ -16,19 +16,24 @@ const brief = (args: unknown) => {
 
 /**
  * A run of tool calls. Collapsed: a 3-row window that slides up as calls arrive (no manual scroll),
- * latest at the bottom; a subagent's steps are rows too, indented under its spawn call. Clicking a row expands the group with that call opened; the header toggles
- * the group. Expanded: every call, each opening to args + output.
+ * latest at the bottom; a finished subagent's steps are rows too, indented under its spawn call. Each running subagent
+ * gets its own window below (its prompt, then its latest steps), so parallel subagents all stay visible. Clicking a row
+ * expands the group with that call opened; the header toggles the group. Expanded: every call, each opening to args + output.
  */
 export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState<number | null>(null);
   const running = tools.filter((t) => t.output === undefined).length;
-  // Collapsed rows: each call, then its subagent's steps (clicking one opens its spawn call).
-  const rows = tools.flatMap((t, i) => [
+  const isRunning = (t: Tool) => live && !!t.sub && !t.sub.ended;
+  // Collapsed rows: each call, then its subagent's steps if it finished (running ones get their own window).
+  const rows: Row[] = tools.flatMap((t, i) => [
     { t, i, sub: false, live },
-    ...(t.sub?.steps ?? []).map((step) => ({ t: step, i, sub: true, live: live && !t.sub?.ended })),
+    ...(isRunning(t) ? [] : (t.sub?.steps ?? []).map((step) => ({ t: step, i, sub: true, live: false }))),
   ]);
-  const hidden = Math.max(0, rows.length - VISIBLE);
+  const openAt = (i: number) => {
+    setFocus(i);
+    setOpen(true);
+  };
 
   return (
     <div>
@@ -57,30 +62,26 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
           ))}
         </div>
       ) : (
-        <div
-          style={{ height: Math.min(rows.length, VISIBLE) * ROW }}
-          className={`overflow-hidden font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
-            hidden ? "mask-t-from-60%" : ""
-          }`}
-        >
-          <div
-            style={{ transform: `translateY(-${hidden * ROW}px)` }}
-            className="transition-transform duration-300 ease-out motion-reduce:transition-none"
-          >
-            {rows.map(({ t, i, sub, live }, row) => (
-              <ToolLine
-                key={`${t.id || i}-${row}`}
-                t={t}
-                live={live}
-                sub={sub}
-                onClick={() => {
-                  setFocus(i);
-                  setOpen(true);
-                }}
-              />
-            ))}
-          </div>
-        </div>
+        <>
+          <Ticker rows={rows} onOpen={openAt} />
+          {tools.map(
+            (t, i) =>
+              isRunning(t) && (
+                <div key={`sub-${t.id || i}`} className="ml-5 border-l border-line pl-3">
+                  <button
+                    onClick={() => openAt(i)}
+                    title="Open this call"
+                    className="flex h-6 w-full items-center gap-2 text-left text-xs text-muted transition-colors hover:text-fg-2"
+                  >
+                    <Bot size={12} className="shrink-0" />
+                    <span className="shrink-0">{steps(t.sub!)}</span>
+                    <span className="truncate text-faint">{brief(t.args)}</span>
+                  </button>
+                  <Ticker rows={t.sub!.steps.map((step) => ({ t: step, i, sub: false, live: true }))} onOpen={openAt} />
+                </div>
+              ),
+          )}
+        </>
       )}
       {tools.map((t, i) => {
         const plan = t.sub && subPlan(t.sub);
@@ -92,6 +93,30 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
           )
         );
       })}
+    </div>
+  );
+}
+
+type Row = { t: Tool; i: number; sub: boolean; live: boolean };
+
+/** Window of the last VISIBLE rows, sliding up as rows arrive. */
+function Ticker({ rows, onOpen }: { rows: Row[]; onOpen: (i: number) => void }) {
+  const hidden = Math.max(0, rows.length - VISIBLE);
+  return (
+    <div
+      style={{ height: Math.min(rows.length, VISIBLE) * ROW }}
+      className={`overflow-hidden font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
+        hidden ? "mask-t-from-60%" : ""
+      }`}
+    >
+      <div
+        style={{ transform: `translateY(-${hidden * ROW}px)` }}
+        className="transition-transform duration-300 ease-out motion-reduce:transition-none"
+      >
+        {rows.map(({ t, i, sub, live }, row) => (
+          <ToolLine key={`${t.id || i}-${row}`} t={t} live={live} sub={sub} onClick={() => onOpen(i)} />
+        ))}
+      </div>
     </div>
   );
 }
