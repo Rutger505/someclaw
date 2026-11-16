@@ -16,9 +16,9 @@ const brief = (args: unknown) => {
 
 /**
  * A run of tool calls. Collapsed: a 3-row window that slides up as calls arrive (no manual scroll),
- * latest at the bottom; a finished subagent's steps are rows too, indented under its spawn call. Each running subagent
- * gets its own window below (its prompt, plan, then its latest steps), so parallel subagents all stay visible; a finished
- * one with a plan keeps a window with just its plan. Clicking a row
+ * latest at the bottom; a finished subagent's steps are rows too, indented under its spawn call. Each running subagent's
+ * spawn call gets its own block below instead (the call row, then its plan and latest steps nested under it), so parallel
+ * subagents all stay visible; a finished one with a plan keeps its block with just the plan. Clicking a row
  * expands the group with that call opened; the header toggles the group. Expanded: every call, each opening to args + output.
  */
 export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
@@ -26,11 +26,15 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
   const [focus, setFocus] = useState<number | null>(null);
   const running = tools.filter((t) => t.output === undefined).length;
   const isRunning = (t: Tool) => live && !!t.sub && !t.sub.ended;
-  // Collapsed rows: each call, then its subagent's steps if it finished (running ones get their own window).
-  const rows: Row[] = tools.flatMap((t, i) => [
-    { t, i, sub: false, live },
-    ...(isRunning(t) ? [] : (t.sub?.steps ?? []).map((step) => ({ t: step, i, sub: true, live: false }))),
-  ]);
+  // Spawn calls of running subagents, or finished ones with a plan, get their own block below the ticker:
+  // the call row itself, with its plan and (while running) latest steps nested under it.
+  const windowed = (t: Tool) => !!t.sub && (isRunning(t) || !!subPlan(t.sub));
+  // Collapsed rows: every other call, then its finished subagent's steps.
+  const rows: Row[] = tools.flatMap((t, i) =>
+    windowed(t)
+      ? []
+      : [{ t, i, sub: false, live }, ...(t.sub?.steps ?? []).map((step) => ({ t: step, i, sub: true, live: false }))],
+  );
   const openAt = (i: number) => {
     setFocus(i);
     setOpen(true);
@@ -66,24 +70,16 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
         <>
           <Ticker rows={rows} onOpen={openAt} />
           {tools.map((t, i) => {
-            if (!t.sub) return null;
+            if (!windowed(t)) return null;
             const run = isRunning(t);
-            const plan = subPlan(t.sub);
-            if (!run && !plan) return null;
+            const plan = subPlan(t.sub!);
             return (
-              <div key={`sub-${t.id || i}`} className="mt-4 ml-5 border-l-2 border-line pl-3">
-                <button
-                  onClick={() => openAt(i)}
-                  title="Open this call"
-                  className="flex h-8 w-full items-center gap-2 text-left text-sm text-fg-2 transition-colors hover:text-fg"
-                >
-                  <Bot size={15} className="shrink-0 text-accent-light" />
-                  <span className="shrink-0 font-medium">Subagent</span>
-                  <span className="shrink-0 text-muted">{steps(t.sub)}</span>
-                  <span className="truncate text-faint">{brief(t.args)}</span>
-                </button>
-                {plan && <Plan entries={plan} live={run} />}
-                {run && <Ticker rows={t.sub.steps.map((step) => ({ t: step, i, sub: false, live: true }))} onOpen={openAt} />}
+              <div key={`sub-${t.id || i}`} className="mt-3">
+                <ToolLine t={t} live={live} sub={false} onClick={() => openAt(i)} />
+                <div className="ml-1.5 border-l-2 border-line pl-3">
+                  {plan && <Plan entries={plan} live={run} />}
+                  {run && <Ticker rows={t.sub!.steps.map((step) => ({ t: step, i, sub: false, live: true }))} onOpen={openAt} />}
+                </div>
               </div>
             );
           })}
