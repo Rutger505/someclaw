@@ -82,6 +82,16 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
           </div>
         </div>
       )}
+      {tools.map((t, i) => {
+        const plan = t.sub && subPlan(t.sub);
+        return (
+          plan && (
+            <div key={`plan-${t.id || i}`} className="ml-5 border-l border-line pl-3">
+              <Plan entries={plan} live={live && !t.sub!.ended} />
+            </div>
+          )
+        );
+      })}
     </div>
   );
 }
@@ -129,6 +139,17 @@ function ToolDetails({ t, live, focused }: { t: Tool; live: boolean; focused: bo
       </pre>
     </details>
   );
+}
+
+/** A subagent's plan: the gateway sends no "plan" event for it, so the args of its latest TodoWrite. */
+function subPlan(sub: Subagent): PlanEntry[] | null {
+  const todos = (sub.steps.findLast((t) => t.name === "TodoWrite")?.args as { todos?: unknown } | undefined)?.todos;
+  if (!Array.isArray(todos)) return null;
+  return todos.map((x: Record<string, unknown>) => ({
+    content: String(x.content ?? ""),
+    activeForm: typeof x.activeForm === "string" ? x.activeForm : undefined,
+    status: String(x.status ?? "pending"),
+  }));
 }
 
 const steps = (sub: Subagent) => `${sub.steps.length} step${sub.steps.length === 1 ? "" : "s"}`;
