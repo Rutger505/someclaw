@@ -8,6 +8,7 @@ import { COMPOSER_KEYS, KEYMAP, useShortcuts } from "./lib/shortcuts";
 import { Chat, type ChatHandle } from "./components/Chat";
 import { Kbd, Sidebar, type SidebarHandle } from "./components/Sidebar";
 import { ReloadBanner } from "./components/ReloadBanner";
+import { UpstreamBanner } from "./components/UpstreamBanner";
 
 export const DASHBOARD_URL = "https://zeroclaw.homelab.rutgerpronk.com";
 
@@ -145,6 +146,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
       )}
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <ReloadBanner busy={!!list?.some((c) => c.status === "running")} />
+        <UpstreamBanner />
         <Chat
           ref={chat}
           id={openId}
