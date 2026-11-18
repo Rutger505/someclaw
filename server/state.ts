@@ -49,6 +49,8 @@ export type State = {
   unpinned: Record<string, Record<string, number>>;
   /** Composer drafts per conversation, shared by all browsers. Empty ones are deleted. */
   drafts: Record<string, Draft>;
+  /** Steers a turn ended without taking in (shared/protocol.ts unprocessedSteers): sent along with the next message. */
+  unprocessed: Record<string, string[]>;
   /** Id of the new-conversation slot: one shared draft across devices, replaced once it gets its first message. */
   fresh: string;
 };
@@ -57,7 +59,7 @@ export type State = {
 export type CronTrack = { session: string; name: string | null; since: string; lastRun: number; goneSince?: string };
 
 const FILE = `${DIR}/state.json`;
-export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, outbox: {}, scheduled: {}, models: {}, cron: {}, unpinned: {}, drafts: {}, fresh: crypto.randomUUID(), token: null, ...read(FILE, {}) };
+export const state: State = { archived: {}, seen: {}, titled: {}, channelTitles: {}, previews: {}, created: {}, resume: {}, outbox: {}, scheduled: {}, models: {}, cron: {}, unpinned: {}, unprocessed: {}, drafts: {}, fresh: crypto.randomUUID(), token: null, ...read(FILE, {}) };
 // Dropped features' keys in old state files.
 for (const k of ["queues", "paused"]) delete (state as Record<string, unknown>)[k];
 

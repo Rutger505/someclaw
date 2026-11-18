@@ -7,7 +7,8 @@ export type Tool = { id: string; name: string; args: unknown; output?: string; s
 export type PlanEntry = { content: string; activeForm?: string; status: string };
 export type Item =
   /** at: index in the persisted history (reset to here); absent for the running turn. */
-  | { kind: "user"; text: string; steer?: boolean; fork?: ForkRef; resent?: Resent; skills?: LoadedSkill[]; handoff?: Handoff; at?: number }
+  /** unprocessed: steer the turn ended without taking in (sent along with the next message: carried = how many). */
+  | { kind: "user"; text: string; steer?: boolean; unprocessed?: boolean; carried?: number; fork?: ForkRef; resent?: Resent; skills?: LoadedSkill[]; handoff?: Handoff; at?: number }
   /** turn: model, tokens, duration, when known (turns finished in someclaw since this was added). */
   | { kind: "agent"; text: string; live?: boolean; at?: number; turn?: TurnModel }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
@@ -29,7 +30,7 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       {
         const r = parseResume(String(e.content ?? ""));
         if (r.resume) items.push({ kind: "meta", text: RESUME_META });
-        if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), steer: !!e.steer, fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
+        if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), steer: !!e.steer, ...(e.unprocessed ? { unprocessed: true } : {}), fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
       }
       break;
     case "chunk":
@@ -146,7 +147,7 @@ export function buildItems(s: Snapshot): Item[] {
     if (m.role === "user") {
       const r = parseResume(m.content);
       if (r.resume) items.push({ kind: "meta", text: RESUME_META });
-      if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), fork: m.fork, resent: m.resent, skills: m.skills, at: i });
+      if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), fork: m.fork, resent: m.resent, skills: m.skills, carried: m.carried, at: i });
     }
     else if (m.role === "assistant" && m.cron) items.push({ kind: "cron", text: m.content, cron: m.cron, at: i });
     else if (m.role === "assistant") {

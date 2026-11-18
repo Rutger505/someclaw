@@ -95,6 +95,8 @@ export type HistoryMessage = {
   cron?: CronRun;
   /** Pinned skills the broker sent along with this user message (content is then only what the user typed). */
   skills?: LoadedSkill[];
+  /** Unprocessed steers of an earlier turn the broker sent along with this user message (content is then only what the user typed). */
+  carried?: number;
 };
 
 /** A skill's SKILL.md as sent along; hash: of its content, so a changed skill is sent again. */
@@ -349,6 +351,39 @@ export function parseSkills(content: string): { text: string; skills?: LoadedSki
     text = text.slice(m[0].length);
   }
   return skills.length ? { text, skills } : { text };
+}
+
+// ---------- unprocessed steers ----------
+// The gateway folds a steer into the running turn only at its next step: a turn stopped (Esc) or ended before then
+// drops it, and it never reaches the history. The broker shows those as unprocessed and sends them along with the
+// next user message, as if each had been its own message. The UI hides the block.
+
+const STEERS_RE = /^<unprocessed-steers count="(\d+)">[\s\S]*?<\/unprocessed-steers>\n\n/;
+const STEERS_CLOSE = "</unprocessed-steers>";
+
+/** Steers of a finished turn missing from its part of the history (after the turn's prompt), in order. */
+export function unprocessedSteers(h: HistoryMessage[], prompt: string | undefined, steers: string[]): string[] {
+  const p = prompt?.trim();
+  const start = p ? h.findLastIndex((m) => m.role === "user" && m.content.includes(p)) : -1;
+  const users = h.slice(start + 1).filter((m) => m.role === "user").map((m) => m.content);
+  return steers.filter((s) => {
+    const i = users.findIndex((u) => u.includes(s.trim()));
+    if (i < 0) return true;
+    users.splice(i, 1);
+    return false;
+  });
+}
+
+export function steersBlock(steers: string[]) {
+  const intro = `[someclaw] ${steers.length === 1 ? "Message" : "Messages"} the user sent while your previous turn ran, which you never saw: that turn ended (usually stopped by the user) before taking ${steers.length === 1 ? "it" : "them"} in. Treat ${steers.length === 1 ? "it" : "them"} like earlier messages of this conversation; the message after this block is the current one.`;
+  const body = steers.map((s, i) => `Message ${i + 1}:\n${s.replaceAll(STEERS_CLOSE, "</unprocessed_steers>")}`).join("\n\n");
+  return `<unprocessed-steers count="${steers.length}">\n${intro}\n\n${body}\n${STEERS_CLOSE}\n\n`;
+}
+
+export function parseSteers(content: string): { text: string; carried?: number } {
+  const m = STEERS_RE.exec(content);
+  if (!m) return { text: content };
+  return { text: content.slice(m[0].length), carried: Number(m[1]) };
 }
 
 // ---------- handoffs ----------

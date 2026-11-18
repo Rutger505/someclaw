@@ -32,7 +32,10 @@ import {
   parseHandoff,
   parseResent,
   parseSkills,
+  parseSteers,
   resendPrompt,
+  steersBlock,
+  unprocessedSteers,
   plainText,
   stripDatePrefix,
   type ClientMsg,
@@ -243,6 +246,7 @@ function forgetIfRecreated(s: GatewaySession) {
     delete state.channelTitles[id];
     delete state.previews[id];
     delete state.unpinned[id];
+    delete state.unprocessed[id];
   }
   state.created[id] = s.created_at;
   save();
@@ -289,9 +293,10 @@ async function history(id: string): Promise<HistoryMessage[]> {
     }
     if (m.role !== "user") return m;
     const { text: unresent, resent } = parseResent(stripDatePrefix(m.content));
-    const { text: content, skills } = parseSkills(unresent);
+    const { text: unskilled, skills } = parseSkills(unresent);
+    const { text: content, carried } = parseSteers(unskilled);
     const { text, fork } = parseFork(content);
-    return { ...m, content: text, ...(fork && { fork }), ...(resent && { resent }), ...(skills && { skills }) };
+    return { ...m, content: text, ...(fork && { fork }), ...(resent && { resent }), ...(skills && { skills }), ...(carried && { carried }) };
   });
 }
 
@@ -457,6 +462,8 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
   c.recovering = false;
   c.attaching = c.attached = false;
   c.replay = c.attachTries = 0;
+  const prompt = c.rec?.text;
+  const steers = c.turn.filter((e) => e.type === "user" && e.steer).map((e) => String(e.content ?? ""));
   c.rec = undefined;
   dropInflight(c.id);
   const failed = aborted || status === "error";
@@ -479,6 +486,14 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
     // before this turn's reply (aborts store one too: "[interrupted by user]"), else at the end
     const at = h?.at(-1)?.role === "assistant" ? h.length - 1 : (h?.length ?? 0);
     appendTools(c.id, { at, events: tools });
+  }
+  if (steers.length && !h) console.error(`broker: ${c.id}: no history, can't tell whether its ${steers.length} steer(s) were taken in`);
+  const lost = h ? unprocessedSteers(h, prompt, steers) : [];
+  if (lost.length) {
+    // after this turn's reply; sent along with the next message
+    console.log(`broker: ${c.id}: turn ended without taking in ${lost.length} steer(s), sending them along with the next message`);
+    appendTools(c.id, { at: h!.length, events: lost.map((content) => ({ type: "user", content, steer: true, unprocessed: true })) });
+    state.unprocessed[c.id] = [...(state.unprocessed[c.id] ?? []), ...lost];
   }
   if (done && h?.at(-1)?.role === "assistant") {
     // configured ref the turn started on; served ref/model differ on a fallback
@@ -546,13 +561,18 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   save();
   const { prefix, sent: skills } = await withSkills(c.id);
   record(c, { type: "user", content: text, ...(fork && { fork: fork.ref }), ...(skills.length ? { skills } : {}) });
-  const sent = prefix + (fork ? forkPrompt(fork.ref, fork.context, text) : text);
+  const carried = state.unprocessed[c.id] ?? [];
+  const sent = prefix + (carried.length ? steersBlock(carried) : "") + (fork ? forkPrompt(fork.ref, fork.context, text) : text);
   c.rec = { id: c.id, text, sent, ...(fork && { fork: fork.ref }), startedAt: c.startedAt, events: [], resent: false };
   writeInflight(c.rec);
   broadcastList();
   try {
     const up = await upstream(c);
     up.send(JSON.stringify({ type: "message", content: sent }));
+    if (carried.length) {
+      delete state.unprocessed[c.id];
+      save();
+    }
   } catch (e) {
     record(c, { type: "error", message: msg(e) });
     finish(c, "error", msg(e));
@@ -1318,6 +1338,7 @@ async function handle(ws: ServerWebSocket<Client>, m: ClientMsg, fail: (message:
         const deleted = truncateSession(m.id, m.keep, m.seen);
         truncateTools(m.id, m.keep);
         truncateTurns(m.id, m.keep);
+        delete state.unprocessed[m.id]; // their tool log entry (after the last reply) is gone too
         console.log(`broker: reset ${m.id} to ${m.keep} messages, ${deleted} deleted (${ws.data.ua})`);
       } catch (e) {
         fail(`reset: ${msg(e)}`);

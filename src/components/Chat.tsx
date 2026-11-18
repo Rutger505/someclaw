@@ -595,9 +595,19 @@ function RowBody({ item, reset, onAnswer }: RowProps) {
       const { files, text } = splitAttachments(item.text);
       return (
         <div className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
-          {item.steer && (
+          {item.steer && !item.unprocessed && (
             <span className="flex items-center gap-1 text-xs text-accent">
               <CornerDownRight size={12} /> steered
+            </span>
+          )}
+          {item.unprocessed && (
+            <span className="flex items-center gap-1 text-xs text-muted" title="The turn ended before rocky took this steer in: it's sent along with your next message">
+              <CornerDownRight size={12} /> steer not processed: turn ended first
+            </span>
+          )}
+          {!!item.carried && (
+            <span className="flex items-center gap-1 text-xs text-muted">
+              <CornerDownRight size={12} /> sent along: {item.carried} unprocessed {item.carried === 1 ? "steer" : "steers"}
             </span>
           )}
           {item.fork && (
