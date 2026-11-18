@@ -171,33 +171,18 @@ function subPlan(sub: Subagent): PlanEntry[] | null {
 
 const steps = (sub: Subagent) => `${sub.steps.length} step${sub.steps.length === 1 ? "" : "s"}`;
 
-/** What a spawn_subagent call's subagent did, nested under it; open until clicked. Its own running state: until
- * subagent_end, while the turn is live. */
+/** What a spawn_subagent call's subagent did, nested under it: its plan, then its steps as a regular tool group.
+ * Its own running state: until subagent_end, while the turn is live. */
 function SubagentSteps({ sub, live }: { sub: Subagent; live: boolean }) {
-  const [open, setOpen] = useState(true);
   const running = live && !sub.ended;
   const plan = subPlan(sub);
   return (
-    <div className="mt-1 mb-4 ml-5 border-l-2 border-line pl-3">
-      <button onClick={() => setOpen((x) => !x)} className="flex h-8 items-center gap-2 text-left font-sans text-sm text-fg-2 transition-colors hover:text-fg">
-        <Bot size={15} className="text-accent-light" />
-        <span className="font-medium">Subagent</span>
-        <span className="text-muted">{steps(sub)}</span>
-        <ChevronDown size={14} className={`transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
-        {running && <span className="text-warn">· running</span>}
-        {!live && !sub.ended && <span className="text-err">· no subagent_end</span>}
-        {sub.ended && !sub.success && <span className="text-err">· failed</span>}
-      </button>
+    <div className="mt-1 mb-4 ml-5 border-l-2 border-line pl-3 font-sans">
+      {plan && <Plan entries={plan} live={running} />}
+      {sub.steps.length > 0 && <ToolGroup tools={sub.steps} live={running} />}
+      {!live && !sub.ended && <div className="text-err">no subagent_end</div>}
       {sub.ended && !sub.success && <div className="whitespace-pre-wrap break-words text-err">{sub.error || "subagent_end: success=false, no error"}</div>}
-      {open && (
-        <>
-          {plan && <Plan entries={plan} live={running} />}
-          {sub.steps.map((t, i) => (
-            <ToolDetails key={t.id || i} t={t} live={running} focused={false} />
-          ))}
-          {sub.truncated !== undefined && <div className="text-faint">later steps not kept (someclaw keeps {sub.truncated} per subagent)</div>}
-        </>
-      )}
+      {sub.truncated !== undefined && <div className="text-faint">later steps not kept (someclaw keeps {sub.truncated} per subagent)</div>}
     </div>
   );
 }
