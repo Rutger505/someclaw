@@ -5,7 +5,8 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } f
 // (GeckoEditable: contentMimeTypes only when the input type hint is empty), never to a textarea. Gecko delivers such
 // an image as a paste event with the file in clipboardData, so the normal paste handling picks it up.
 
-export type EditorHandle = { focus: () => void };
+/** focus(true): caret to the end (Ctrl+L), else keep a caret already inside. */
+export type EditorHandle = { focus: (end?: boolean) => void };
 
 type Props = {
   value: string;
@@ -60,11 +61,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ value, o
   const el = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
-    focus: () => {
+    focus: (end) => {
       const e = el.current;
       if (!e) return;
       e.focus();
-      if (!e.contains(getSelection()?.anchorNode ?? null)) caretToEnd(e);
+      if (end || !e.contains(getSelection()?.anchorNode ?? null)) caretToEnd(e);
     },
   }));
 

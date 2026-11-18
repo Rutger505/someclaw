@@ -70,7 +70,7 @@ export const Chat = forwardRef<ChatHandle, Props>(function Chat({ id, conv, snap
 
   useImperativeHandle(ref, () => ({
     stop,
-    focus: () => input.current?.focus(),
+    focus: () => input.current?.focus(true),
     rename: () => conv && setRenaming(conv.name ?? ""),
     unlock: () => {
       if (!readOnly) return false;
