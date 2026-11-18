@@ -1,4 +1,4 @@
-import { Bot, Check, ChevronDown, Circle, ListTodo, Wrench, X } from "lucide-react";
+import { Check, ChevronDown, Circle, ListTodo, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PlanEntry, Subagent, Tool } from "../lib/items";
 
@@ -16,25 +16,14 @@ const brief = (args: unknown) => {
 
 /**
  * A run of tool calls. Collapsed: a 3-row window that slides up as calls arrive (no manual scroll),
- * latest at the bottom; a finished subagent's steps are rows too, indented under its spawn call. Each running subagent's
- * spawn call gets its own block below instead (the call row, then its plan and latest steps nested under it), so parallel
- * subagents all stay visible; a finished one with a plan keeps its block with just the plan. Clicking a row
- * expands the group with that call opened; the header toggles the group. Expanded: every call, each opening to args + output.
+ * latest at the bottom; a spawn_subagent call is a row like any other. Clicking a row expands the group
+ * with that call opened; the header toggles the group. Expanded: every call, each opening to args + output,
+ * a spawn_subagent call with its subagent's plan and steps (a nested tool group) indented under it.
  */
 export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState<number | null>(null);
   const running = tools.filter((t) => t.output === undefined).length;
-  const isRunning = (t: Tool) => live && !!t.sub && !t.sub.ended;
-  // Spawn calls of running subagents, or finished ones with a plan, get their own block below the ticker:
-  // the call row itself, with its plan and (while running) latest steps nested under it.
-  const windowed = (t: Tool) => !!t.sub && (isRunning(t) || !!subPlan(t.sub));
-  // Collapsed rows: every other call, then its finished subagent's steps.
-  const rows: Row[] = tools.flatMap((t, i) =>
-    windowed(t)
-      ? []
-      : [{ t, i, sub: false, live }, ...(t.sub?.steps ?? []).map((step) => ({ t: step, i, sub: true, live: false }))],
-  );
   const openAt = (i: number) => {
     setFocus(i);
     setOpen(true);
@@ -67,36 +56,18 @@ export function ToolGroup({ tools, live }: { tools: Tool[]; live: boolean }) {
           ))}
         </div>
       ) : (
-        <>
-          <Ticker rows={rows} onOpen={openAt} />
-          {tools.map((t, i) => {
-            if (!windowed(t)) return null;
-            const run = isRunning(t);
-            const plan = subPlan(t.sub!);
-            return (
-              <div key={`sub-${t.id || i}`} className="mt-3">
-                <ToolLine t={t} live={live} sub={false} onClick={() => openAt(i)} />
-                <div className="ml-1.5 border-l-2 border-line pl-3">
-                  {plan && <Plan entries={plan} live={run} />}
-                  {run && <Ticker rows={t.sub!.steps.map((step) => ({ t: step, i, sub: false, live: true }))} onOpen={openAt} />}
-                </div>
-              </div>
-            );
-          })}
-        </>
+        <Ticker tools={tools} live={live} onOpen={openAt} />
       )}
     </div>
   );
 }
 
-type Row = { t: Tool; i: number; sub: boolean; live: boolean };
-
-/** Window of the last VISIBLE rows, sliding up as rows arrive. */
-function Ticker({ rows, onOpen }: { rows: Row[]; onOpen: (i: number) => void }) {
-  const hidden = Math.max(0, rows.length - VISIBLE);
+/** Window of the last VISIBLE calls, sliding up as calls arrive. */
+function Ticker({ tools, live, onOpen }: { tools: Tool[]; live: boolean; onOpen: (i: number) => void }) {
+  const hidden = Math.max(0, tools.length - VISIBLE);
   return (
     <div
-      style={{ height: Math.min(rows.length, VISIBLE) * ROW }}
+      style={{ height: Math.min(tools.length, VISIBLE) * ROW }}
       className={`overflow-hidden font-mono text-xs transition-[height] duration-200 ease-out motion-reduce:transition-none ${
         hidden ? "mask-t-from-60%" : ""
       }`}
@@ -105,8 +76,8 @@ function Ticker({ rows, onOpen }: { rows: Row[]; onOpen: (i: number) => void }) 
         style={{ transform: `translateY(-${hidden * ROW}px)` }}
         className="transition-transform duration-300 ease-out motion-reduce:transition-none"
       >
-        {rows.map(({ t, i, sub, live }, row) => (
-          <ToolLine key={`${t.id || i}-${row}`} t={t} live={live} sub={sub} onClick={() => onOpen(i)} />
+        {tools.map((t, i) => (
+          <ToolLine key={t.id || i} t={t} live={live} onClick={() => onOpen(i)} />
         ))}
       </div>
     </div>
@@ -119,17 +90,15 @@ function Status({ t, live }: { t: Tool; live: boolean }) {
   return <span className="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-warn border-t-transparent" />;
 }
 
-function ToolLine({ t, live, sub, onClick }: { t: Tool; live: boolean; sub: boolean; onClick: () => void }) {
+function ToolLine({ t, live, onClick }: { t: Tool; live: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       title="Open this call"
-      className={`-mx-2 flex h-6 w-[calc(100%+1rem)] cursor-pointer ${sub ? "pl-7" : ""} items-center gap-2 rounded-md px-2 text-left text-fg-2 transition-opacity duration-300 hover:bg-elevated hover:text-fg starting:opacity-0`}
+      className={`-mx-2 flex h-6 w-[calc(100%+1rem)] cursor-pointer items-center gap-2 rounded-md px-2 text-left text-fg-2 transition-opacity duration-300 hover:bg-elevated hover:text-fg starting:opacity-0`}
     >
-      {sub && <Bot size={12} className="shrink-0 text-muted" />}
       <Status t={t} live={live} />
       <span className="shrink-0 text-accent-light">{t.name}</span>
-      {t.sub && <span className="shrink-0 text-muted">{steps(t.sub)}</span>}
       <span className="truncate text-faint">{brief(t.args)}</span>
     </button>
   );
@@ -168,8 +137,6 @@ function subPlan(sub: Subagent): PlanEntry[] | null {
     status: String(x.status ?? "pending"),
   }));
 }
-
-const steps = (sub: Subagent) => `${sub.steps.length} step${sub.steps.length === 1 ? "" : "s"}`;
 
 /** What a spawn_subagent call's subagent did, nested under it: its plan, then its steps as a regular tool group.
  * Its own running state: until subagent_end, while the turn is live. */
