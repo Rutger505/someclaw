@@ -504,7 +504,7 @@ async function finish(c: Conv, status: ConvStatus, error: string | null = null, 
     const usage = Array.isArray(done.usage_by_provider) ? (done.usage_by_provider as Record<string, unknown>[]) : [];
     const cached = usage.reduce<number | undefined>((sum, u) => (num(u.cached_input_tokens) === undefined ? sum : (sum ?? 0) + num(u.cached_input_tokens)!), undefined);
     const ms = c.startedAt && c.doneAt ? c.doneAt - c.startedAt : undefined;
-    appendTurn(c.id, { at: h.length - 1, provider, model, input: num(done.input_tokens), cached, output: num(done.output_tokens), ms });
+    appendTurn(c.id, { at: h.length - 1, provider, model, input: num(done.input_tokens), cached, output: num(done.output_tokens), ms, subInput: num(done.subagent_input_tokens), subOutput: num(done.subagent_output_tokens) });
     const asked = c.upModel;
     if (asked && ran && ran !== asked) {
       status = "error";

@@ -748,6 +748,7 @@ function TurnInfo({ t }: { t: TurnModel }) {
     `Model: ${t.provider} · ${t.model}`,
     t.input !== undefined && `Input: ${t.input.toLocaleString()} tokens, summed over every model call this turn${t.cached !== undefined ? ` (${t.cached.toLocaleString()} cached)` : ""}`,
     t.output !== undefined && `Output: ${t.output.toLocaleString()} tokens`,
+    (t.subInput !== undefined || t.subOutput !== undefined) && `Of which subagents: ${(t.subInput ?? 0).toLocaleString()} in · ${(t.subOutput ?? 0).toLocaleString()} out`,
     t.ms !== undefined && `Turn took ${dur(t.ms)} (send to done)`,
   ].filter(Boolean).join("\n");
   return <span className="min-w-0 truncate px-1.5 font-mono text-[11px] text-faint" title={title}>{parts.join(" · ")}</span>;

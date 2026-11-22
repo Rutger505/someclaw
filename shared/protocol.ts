@@ -113,7 +113,7 @@ export type ToolLog = { at: number; events: GatewayEvent[] };
 
 /** Model that answered history[at], from the turn's done frame. provider: serving provider ref (e.g. anthropic.opus).
  * Tokens summed over the turn's model calls (input includes cached); ms: send to done. Absent in turns saved before. */
-export type TurnModel = { at: number; provider: string; model: string; input?: number; cached?: number; output?: number; ms?: number };
+export type TurnModel = { at: number; provider: string; model: string; input?: number; cached?: number; output?: number; ms?: number; subInput?: number; subOutput?: number };
 
 /** A configured provider profile (providers.models.<family>.<alias>). ref = "<family>.<alias>". */
 export type ModelOption = { ref: string; family: string; alias: string; model: string };
