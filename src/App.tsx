@@ -29,6 +29,9 @@ export function App() {
 
 // The open conversation lives in the URL hash: reload keeps it, back/forward switch. No hash: the new-conversation slot,
 // one id from the server shared by all devices (same draft on phone and PC), so a bookmark/PWA start opens it.
+/** Tailwind md: the sidebar docks beside the chat instead of overlaying it. */
+const wideQuery = matchMedia("(min-width: 768px)");
+
 const hashId = () => decodeURIComponent(location.hash.slice(1)) || null;
 
 function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
@@ -40,7 +43,14 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
   /** Search hit to scroll to once that conversation's history is in; n: a repeat click scrolls again. */
   const [jump, setJump] = useState<{ id: string; at: number; n: number } | null>(null);
   const side = useRef<SidebarHandle>(null);
-  const [sidebar, setSidebar] = useState(() => localStorage.getItem("sidebar") !== "0" && innerWidth >= 768);
+  // Wide: docked, open unless closed there before (only wide toggles persist). Narrow: overlay, starts closed.
+  // Crossing the breakpoint resets it, so a docked sidebar never lingers as an overlay.
+  const [sidebar, setSidebar] = useState(() => wideQuery.matches && localStorage.getItem("sidebar") !== "0");
+  useEffect(() => {
+    const onChange = () => setSidebar(wideQuery.matches && localStorage.getItem("sidebar") !== "0");
+    wideQuery.addEventListener("change", onChange);
+    return () => wideQuery.removeEventListener("change", onChange);
+  }, []);
   const [help, setHelp] = useState(false);
   const [draftEmpty, setDraftEmpty] = useState(true);
   const chat = useRef<ChatHandle>(null);
@@ -52,7 +62,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
   /** null: the new-conversation slot. */
   const open = (id: string | null) => {
     setRoute(id);
-    if (innerWidth < 768) setSidebar(false);
+    if (!wideQuery.matches) setSidebar(false);
   };
   useEffect(() => {
     if (hashId() !== route) history.pushState(null, "", route ? `#${encodeURIComponent(route)}` : location.pathname + location.search);
@@ -63,7 +73,9 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
     addEventListener("popstate", onHash);
     return () => (removeEventListener("hashchange", onHash), removeEventListener("popstate", onHash));
   }, []);
-  useEffect(() => localStorage.setItem("sidebar", sidebar ? "1" : "0"), [sidebar]);
+  useEffect(() => {
+    if (wideQuery.matches) localStorage.setItem("sidebar", sidebar ? "1" : "0");
+  }, [sidebar]);
   useEffect(() => {
     document.title = conv ? `${conv.name ?? "someclaw"} · someclaw` : "someclaw";
   }, [conv?.name]);
@@ -159,7 +171,7 @@ function Shell({ onUnauthorized }: { onUnauthorized: () => void }) {
           onOpen={open}
           onSent={() => !route && setRoute(openId)}
           // overlay sidebar (narrow screens) covers the composer the files went into
-          onDropped={() => innerWidth < 768 && setSidebar(false)}
+          onDropped={() => !wideQuery.matches && setSidebar(false)}
         />
       </div>
 
