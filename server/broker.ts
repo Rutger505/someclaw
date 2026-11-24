@@ -560,10 +560,11 @@ async function startTurn(c: Conv, text: string, fork?: { ref: ForkRef; context: 
   if (!session(c.id)?.message_count) state.previews[c.id] ??= preview(text);
   save();
   const { prefix, sent: skills } = await withSkills(c.id);
-  record(c, { type: "user", content: text, ...(fork && { fork: fork.ref }), ...(skills.length ? { skills } : {}) });
+  const time = new Date(c.startedAt).toISOString(); // the gateway only stores the message at turn end
+  record(c, { type: "user", content: text, time, ...(fork && { fork: fork.ref }), ...(skills.length ? { skills } : {}) });
   const carried = state.unprocessed[c.id] ?? [];
   const sent = prefix + (carried.length ? steersBlock(carried) : "") + (fork ? forkPrompt(fork.ref, fork.context, text) : text);
-  c.rec = { id: c.id, text, sent, ...(fork && { fork: fork.ref }), startedAt: c.startedAt, events: [], resent: false };
+  c.rec = { id: c.id, text, sent, ...(fork && { fork: fork.ref }), startedAt: c.startedAt, time, events: [], resent: false };
   writeInflight(c.rec);
   broadcastList();
   try {
@@ -723,7 +724,7 @@ function recoverInflight() {
     c.startedAt = rec.startedAt;
     c.lastFrameAt = Date.now();
     c.tools = rec.events.filter((e) => STEP_TYPES.has(e.type));
-    c.turn = [{ type: "user", content: rec.text, ...(rec.fork && { fork: rec.fork }) }, ...rec.events.map((e) => ({ ...e }))];
+    c.turn = [{ type: "user", content: rec.text, ...(rec.time && { time: rec.time }), ...(rec.fork && { fork: rec.fork }) }, ...rec.events.map((e) => ({ ...e }))];
     c.recovering = true;
     c.turn.push({ type: "notice", message: "someclaw restarted mid-turn: reattaching" });
     console.log(`broker: ${rec.id}: was running when someclaw stopped (${rec.events.length} steps), recovering`);
@@ -1129,8 +1130,9 @@ async function sendText(id: string, raw: string, fail: Fail): Promise<string | u
   }
   try {
     const up = await upstream(c);
-    record(c, { type: "user", content: text, steer: true });
-    keepStep(c, { type: "user", content: text, steer: true });
+    const step = { type: "user", content: text, steer: true, time: new Date().toISOString() };
+    record(c, step);
+    keepStep(c, step);
     up.send(JSON.stringify({ type: "message", content: text }));
   } catch (e) {
     return void fail(`steer: ${msg(e)}`);

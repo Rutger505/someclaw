@@ -111,6 +111,8 @@ export type Inflight = {
   fork?: ForkRef;
   /** ms epoch the gateway turn started (the resend's, once resent). */
   startedAt: number;
+  /** ISO time the user sent the message (kept across resends; shown until the gateway stores it at turn end). */
+  time?: string;
   /** tool_call, tool_result and steer messages so far. */
   events: GatewayEvent[];
   /** Already resent once after a restart: a second cut-off isn't resent. */

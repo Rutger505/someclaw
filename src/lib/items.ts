@@ -30,7 +30,7 @@ function addEvent(items: Item[], e: GatewayEvent, live: boolean) {
       {
         const r = parseResume(String(e.content ?? ""));
         if (r.resume) items.push({ kind: "meta", text: RESUME_META });
-        if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), steer: !!e.steer, ...(e.unprocessed ? { unprocessed: true } : {}), fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined });
+        if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), steer: !!e.steer, ...(e.unprocessed ? { unprocessed: true } : {}), fork: e.fork as ForkRef | undefined, skills: e.skills as LoadedSkill[] | undefined, sent: typeof e.time === "string" ? e.time : undefined });
       }
       break;
     case "chunk":

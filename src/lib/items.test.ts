@@ -47,3 +47,10 @@ test("truncated marker", () => {
   const t = tools(buildItems(snap({ turn: [...running, sub({ type: "truncated", limit: 200 })] })))[0]!;
   expect(t.sub!.truncated).toBe(200);
 });
+
+test("send time: live user events carry the broker's time, stored messages the gateway's", () => {
+  const live = buildItems(snap({ turn: [{ type: "user", content: "hi", time: "2026-11-24T18:06:24.000Z" }] }));
+  expect(live[0]).toMatchObject({ kind: "user", sent: "2026-11-24T18:06:24.000Z" });
+  const stored = buildItems(snap({ history: [{ role: "user", content: "hi", created_at: "2026-11-24T18:06:24.123456789Z" }] }));
+  expect(stored[0]).toMatchObject({ kind: "user", sent: "2026-11-24T18:06:24.123456789Z" });
+});
