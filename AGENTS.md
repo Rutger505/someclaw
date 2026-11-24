@@ -19,7 +19,7 @@ Custom ZeroClaw web UI, always agent `rocky`. Architecture, install, deploy inte
 - `bun run check` and `bun test` must pass before committing.
 - **e2e** (headless Chromium + puppeteer-core): token from a test pairing, set localStorage `zeroclaw_token` + an e2e session id, never a real session. Delete e2e sessions after (`DELETE /api/sessions/<id>`). Test pairings leave a paired device behind.
 - Firefox drops files from synthetic ClipboardEvents: e2e paste there via `navigator.clipboard.write` + Ctrl+V.
-- Rate limit without a real limit: `SOMECLAW_USAGE_FILE=<fake usage json>` on the dev server; the poll caches, restart dev after editing it. "Send now" at a full window only shows with extra usage available.
+- Rate limit without a real limit: `SOMECLAW_USAGE_FILE=<fake usage json>` on the dev server; the poll caches, restart dev after editing it. "Send now" at a full window only shows with extra usage available. Auto-resume of a rate-limited turn: max 3 attempts, 5 min fallback when there's no reset time.
 
 ## Deploy
 - Commit, then `bin/deploy` (~3 s): pushes main, runs `someclaw-update.service` now, checks live checkout + service. The 1-min timer only catches pushes made elsewhere.
