@@ -8,9 +8,9 @@ export type PlanEntry = { content: string; activeForm?: string; status: string }
 export type Item =
   /** at: index in the persisted history (reset to here); absent for the running turn. */
   /** unprocessed: steer the turn ended without taking in (sent along with the next message: carried = how many). */
-  | { kind: "user"; text: string; steer?: boolean; unprocessed?: boolean; carried?: number; fork?: ForkRef; resent?: Resent; skills?: LoadedSkill[]; handoff?: Handoff; at?: number }
+  | { kind: "user"; text: string; steer?: boolean; unprocessed?: boolean; carried?: number; fork?: ForkRef; resent?: Resent; skills?: LoadedSkill[]; handoff?: Handoff; at?: number; sent?: string }
   /** turn: model, tokens, duration, when known (turns finished in someclaw since this was added). */
-  | { kind: "agent"; text: string; live?: boolean; at?: number; turn?: TurnModel }
+  | { kind: "agent"; text: string; live?: boolean; at?: number; turn?: TurnModel; sent?: string }
   | { kind: "tools"; tools: Tool[]; live?: boolean }
   /** Run result of a cron job created in this conversation, posted by the broker. */
   | { kind: "cron"; text: string; cron: CronRun; at: number }
@@ -147,13 +147,13 @@ export function buildItems(s: Snapshot): Item[] {
     if (m.role === "user") {
       const r = parseResume(m.content);
       if (r.resume) items.push({ kind: "meta", text: RESUME_META });
-      if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), fork: m.fork, resent: m.resent, skills: m.skills, carried: m.carried, at: i });
+      if (r.text) items.push({ kind: "user", ...parseHandoff(r.text), fork: m.fork, resent: m.resent, skills: m.skills, carried: m.carried, at: i, sent: m.created_at });
     }
     else if (m.role === "assistant" && m.cron) items.push({ kind: "cron", text: m.content, cron: m.cron, at: i });
     else if (m.role === "assistant") {
       // Channel sessions: tool-using turns are stored as native JSON (text + tool_calls), results as role "tool".
       const { text, calls } = assistantParts(m.content);
-      if (text.trim() || !calls.length) items.push({ kind: "agent", text, at: i, turn: s.turns.find((t) => t.at === i) });
+      if (text.trim() || !calls.length) items.push({ kind: "agent", text, at: i, sent: m.created_at, turn: s.turns.find((t) => t.at === i) });
       for (const c of calls) addEvent(items, { type: "tool_call", id: c.id, name: c.name, args: c.args }, false);
     } else if (m.role === "tool" && toolResult(m.content)) {
       const r = toolResult(m.content)!;

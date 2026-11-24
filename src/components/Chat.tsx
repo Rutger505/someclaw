@@ -2,7 +2,7 @@ import { Archive, ArchiveRestore, ArrowUp, CalendarClock, Check, CircleAlert, Ci
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { previewText, splitAttachments, withAttachments, type Attachment } from "../../shared/attachments";
 import type { ClientMsg, Conversation, Outbox, Resume, Scheduled, TurnModel, Usage } from "../../shared/protocol";
-import { until, when } from "../lib/time";
+import { stamp, until, when } from "../lib/time";
 import type { Snapshot } from "../lib/broker";
 import { uploadFile } from "../lib/gateway";
 import { buildItems, type Item } from "../lib/items";
@@ -633,7 +633,7 @@ function RowBody({ item, reset, onAnswer }: RowProps) {
             </div>
           )}
           {text && <div className="max-w-full rounded-2xl rounded-br-md bg-elevated px-4 py-2.5 whitespace-pre-wrap wrap-anywhere ring-1 ring-line">{text}</div>}
-          <Actions text={item.text} reset={reset} />
+          <Actions text={item.text} reset={reset} sent={item.sent} />
         </div>
       );
     }
@@ -642,7 +642,7 @@ function RowBody({ item, reset, onAnswer }: RowProps) {
         <div className="group max-w-full">
           <Markdown text={item.text} />
           {item.live && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-accent align-middle" />}
-          {!item.live && <Actions text={item.text} reset={reset} turn={item.turn} />}
+          {!item.live && <Actions text={item.text} reset={reset} turn={item.turn} sent={item.sent} />}
         </div>
       );
     case "cron": {
@@ -739,6 +739,13 @@ function dur(ms: number) {
   return m < 60 ? `${m}m ${pad(Math.floor(s % 60))}s` : `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
 }
 
+/** When a message was stored, in the hover bar: time only today, with the day before that. */
+function SentAt({ iso }: { iso: string }) {
+  const d = new Date(iso.replace(/(\.\d{3})\d+/, "$1")); // gateway sends nanoseconds; Firefox can't parse those
+  if (isNaN(d.getTime())) return null;
+  return <span className="shrink-0 px-1.5 text-[11px] text-faint" title={d.toLocaleString()}>{stamp(d)}</span>;
+}
+
 /** Model · tokens · duration of a reply's turn, in the hover bar. */
 function TurnInfo({ t }: { t: TurnModel }) {
   const parts = [`${t.provider} · ${t.model}`];
@@ -754,8 +761,8 @@ function TurnInfo({ t }: { t: TurnModel }) {
   return <span className="min-w-0 truncate px-1.5 font-mono text-[11px] text-faint" title={title}>{parts.join(" · ")}</span>;
 }
 
-/** Under a message, on hover (always on touch): copy its full text, reset the conversation to it (asks first), turn info. */
-function Actions({ text, reset, turn }: { text: string; reset?: Reset; turn?: TurnModel }) {
+/** Under a message, on hover (always on touch): copy its full text, reset the conversation to it (asks first), send time, turn info. */
+function Actions({ text, reset, turn, sent }: { text: string; reset?: Reset; turn?: TurnModel; sent?: string }) {
   const [copied, setCopied] = useState<"ok" | string | null>(null);
   const [confirm, setConfirm] = useState(false);
   useEffect(() => {
@@ -796,6 +803,7 @@ function Actions({ text, reset, turn }: { text: string; reset?: Reset; turn?: Tu
         </button>
       )}
       {copied && copied !== "ok" && <span className="px-1.5 font-mono text-err">{copied}</span>}
+      {sent && <SentAt iso={sent} />}
       {turn && <TurnInfo t={turn} />}
     </div>
   );
